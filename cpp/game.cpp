@@ -7,6 +7,8 @@
 #include <flame/universe/components/image.h>
 #include <flame/universe/components/receiver.h>
 #include <flame/universe/components/camera.h>
+#include <flame/universe/components/body2d.h>
+#include <flame/universe/systems/scene.h>
 
 struct Game : UniverseApplication
 {
@@ -25,6 +27,7 @@ const auto tile_sz_y = tile_sz * 0.5f * 1.7320508071569;
 graphics::ImagePtr img_tile = nullptr;
 graphics::ImagePtr img_tile_select = nullptr;
 graphics::ImagePtr img_building = nullptr;
+graphics::ImagePtr img_sprite = nullptr;
 
 enum ElementType
 {
@@ -85,6 +88,32 @@ struct cElementCollector : cBuilding
 	void update() override;
 };
 
+struct cCharacter : Component
+{
+	cElementPtr element = nullptr;
+	cBody2dPtr body2d = nullptr;
+	cPlayer* player = nullptr;
+
+	float attack_interval = 1.f;
+	float attack_range = 50.f;
+
+	bool has_target = true;
+	vec2 target_pos;
+	float t = 0.f;
+
+	cCharacter() { type_hash = "cCharacter"_h; }
+	virtual ~cCharacter() {}
+
+	void update() override;
+};
+
+struct cBullet : Component
+{
+	cCharacter* owner = nullptr;
+
+	uint id = 0;
+};
+
 struct cPlayer : Component
 {
 	uint fire_element = 0;
@@ -92,6 +121,7 @@ struct cPlayer : Component
 	uint grass_element = 0;
 
 	EntityPtr buildings = nullptr;
+	EntityPtr characters = nullptr;
 
 	cPlayer() { type_hash = "cPlayer"_h; }
 	virtual ~cPlayer() {}
@@ -102,6 +132,11 @@ struct cPlayer : Component
 		buildings->name = "buildings";
 		buildings->add_component<cElement>();
 		entity->add_child(buildings);
+
+		characters = Entity::create();
+		characters->name = "characters";
+		characters->add_component<cElement>();
+		entity->add_child(characters);
 	}
 
 	cBuilding* add_building(BuildingType type, cTile* tile)
@@ -129,6 +164,27 @@ struct cPlayer : Component
 		}
 		return building;
 	}
+
+	cCharacter* add_character(const vec2& pos)
+	{
+		auto e = Entity::create();
+		auto element = e->add_component<cElement>();
+		element->pos = pos;
+		element->ext = vec2(tile_sz * 0.7f);
+		auto image = e->add_component<cImage>();
+		image->image = img_sprite;
+		auto body2d = e->add_component<cBody2d>();
+		body2d->shape_type = physics::ShapeCircle;
+		body2d->radius = element->ext.x * 0.5f;
+		body2d->friction = 0.3f;
+		auto c = new cCharacter;
+		c->element = element;
+		c->body2d = body2d;
+		c->player = this;
+		e->add_component_p(c);
+		characters->add_child(e);
+		return c;
+	}
 };
 
 void cElementCollector::update()
@@ -144,6 +200,30 @@ void cElementCollector::update()
 		case ElementWater: player->water_element++; break;
 		case ElementGrass: player->grass_element++; break;
 		}
+	}
+}
+
+void cCharacter::update()
+{
+	if (t > 0.f)
+		t -= delta_time;
+	if (t <= 0.f)
+	{
+		t = linearRand(0.5f, 1.f);
+
+		//sScene::instance()->query_world2d();
+	}
+	{
+		auto pos = element->pos;
+		auto t = vec2(0.f);
+		if (has_target)
+		{
+			if (distance(pos, target_pos) > attack_range)
+				t = normalize(target_pos - pos) * 32.f/*max speed*/;
+		}
+		auto f = t - body2d->get_velocity();
+		f *= body2d->mass;
+		body2d->apply_force(f);
 	}
 }
 
@@ -163,6 +243,7 @@ void Game::init()
 	img_tile = graphics::Image::get(L"assets/tile.png");
 	img_tile_select = graphics::Image::get(L"assets/tile_select.png");
 	img_building = graphics::Image::get(L"assets/building.png");
+	img_sprite = graphics::Image::get(L"assets/sprite.png");
 
 	auto root = world->root.get();
 
@@ -320,6 +401,7 @@ bool Game::on_update()
 
 		auto bottom_pannel_height = 50.f;
 		hud->begin("bottom"_h, vec2(0.f, screen_size.y - bottom_pannel_height), vec2(screen_size.x, bottom_pannel_height), cvec4(0, 0, 0, 255));
+		hud->begin_layout(HudHorizontal);
 
 		{
 			auto selected = selecting_building == BuildingElementCollector;
@@ -337,6 +419,19 @@ bool Game::on_update()
 			}
 		}
 
+		if (hud->button(L"Create Character A"))
+		{
+			auto c = main_player->add_character(vec2(100.f + linearRand(-5.f, +5.f), 100.f + linearRand(-5.f, +5.f)));
+			c->has_target = true;
+			c->target_pos = vec2(vec2(200.f + linearRand(-25.f, +25.f), 200.f + linearRand(-25.f, +25.f)));
+		}
+		if (hud->button(L"Create Character B"))
+		{
+			auto c = main_player->add_character(vec2(200.f + linearRand(-5.f, +5.f), 200.f + linearRand(-5.f, +5.f)));
+			c->has_target = true;
+			c->target_pos = vec2(vec2(100.f + linearRand(-25.f, +25.f), 100.f + linearRand(-25.f, +25.f)));
+		}
+
 		if (hovering_tile)
 		{
 			tile_select->entity->set_enable(true);
@@ -345,6 +440,7 @@ bool Game::on_update()
 		else
 			tile_select->entity->set_enable(false);
 
+		hud->end_layout();
 		hud->end();
 	}
 
