@@ -13,11 +13,10 @@
 struct Game : UniverseApplication
 {
 	cCameraPtr camera = nullptr;
+	graphics::CanvasPtr canvas = nullptr;
 
 	void init();
 	bool on_update() override;
-	void on_render() override;
-	void on_gui() override;
 };
 
 const auto tile_cx = 60U;
@@ -32,9 +31,13 @@ graphics::ImagePtr img_sprite = nullptr;
 graphics::ImagePtr img_food = nullptr;
 graphics::ImagePtr img_population = nullptr;
 graphics::ImagePtr img_production = nullptr;
+const wchar_t icon_food = graphics::ICON_BEGIN + 0;
+const wchar_t icon_population = graphics::ICON_BEGIN + 1;
+const wchar_t icon_production = graphics::ICON_BEGIN + 2;
 
 enum ElementType
 {
+	ElementNone,
 	ElementFire,
 	ElementWater,
 	ElementGrass
@@ -65,9 +68,17 @@ enum BuildingType
 	BuildingFireCreatureMaker,
 	BuildingWaterCreatureMaker,
 	BuildingGrassCreatureMaker,
+	BuildingSteamEngine,
+	BuildingWaterWheel,
+	BuildingFarm,
 
 	BuildingTypeCount
 };
+
+inline ElementType get_building_tile_requirement(BuildingType type)
+{
+	return ElementNone;
+}
 
 inline const wchar_t* get_building_name(BuildingType type)
 {
@@ -87,9 +98,17 @@ inline const wchar_t* get_building_name(BuildingType type)
 		return L"Water Creature Maker";
 	case BuildingGrassCreatureMaker:
 		return L"Grass Creature Maker";
+	case BuildingSteamEngine:
+		return L"Steam Engine";
+	case BuildingWaterWheel:
+		return L"Water Wheel";
+	case BuildingFarm:
+		return L"Farm";
 	}
 	return L"";
 }
+
+std::vector<BuildingType> available_constructions = { BuildingSteamEngine, BuildingWaterWheel, BuildingFarm };
 
 struct cPlayer;
 struct cCity;
@@ -126,11 +145,13 @@ struct cBuilding : Component
 	bool dead = false;
 	int hp = 30;
 	int hp_max = 30;
+	bool working = false;
 
 	cBuilding() { type_hash = "cBuilding"_h; }
 	virtual ~cBuilding() {}
 
 	void on_init() override;
+	virtual void on_show_ui(sHudPtr hud) {}
 };
 
 struct cConstruction : cBuilding
@@ -142,8 +163,8 @@ struct cConstruction : cBuilding
 	cConstruction() { type_hash = "cConstruction"_h; }
 	virtual ~cConstruction() {}
 
-	void on_init() override;
 	void update() override;
+	void on_show_ui(sHudPtr hud) override;
 };
 
 struct cCity : cBuilding
@@ -227,7 +248,7 @@ struct cCity : cBuilding
 	{
 		for (auto& b : buildings->children)
 		{
-			auto building = b->get_component<cBuilding>();
+			auto building = b->get_base_component<cBuilding>();
 			if (building->tile == tile)
 				return building;
 		}
@@ -251,6 +272,30 @@ struct cCreatureMaker : cBuilding
 
 	cCreatureMaker() { type_hash = "cCreatureMaker"_h; }
 	virtual ~cCreatureMaker() {}
+
+	void update() override;
+};
+
+struct cSteamEngine : cBuilding
+{
+	cSteamEngine() { type_hash = "cSteamEngine"_h; }
+	virtual ~cSteamEngine() {}
+
+	void update() override;
+};
+
+struct cWaterWheel : cBuilding
+{
+	cWaterWheel() { type_hash = "cWaterWheel"_h; }
+	virtual ~cWaterWheel() {}
+
+	void update() override;
+};
+
+struct cFarm : cBuilding
+{
+	cFarm() { type_hash = "cFarm"_h; }
+	virtual ~cFarm() {}
 
 	void update() override;
 };
@@ -367,6 +412,7 @@ struct cPlayer : Component
 			b->element = element;
 			b->body2d = body2d;
 			b->city = tile->city;
+			b->hp = 0;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -419,6 +465,42 @@ struct cPlayer : Component
 			case BuildingWaterCreatureMaker: b->element_type = ElementWater; break;
 			case BuildingGrassCreatureMaker: b->element_type = ElementGrass; break;
 			}
+			e->add_component_p(b);
+			city->buildings->add_child(e);
+
+			building = b;
+		}
+			break;
+		case BuildingSteamEngine:
+		{
+			auto b = new cSteamEngine;
+			b->element = element;
+			b->body2d = body2d;
+			b->city = tile->city;
+			e->add_component_p(b);
+			city->buildings->add_child(e);
+
+			building = b;
+		}
+			break;
+		case BuildingWaterWheel:
+		{
+			auto b = new cWaterWheel;
+			b->element = element;
+			b->body2d = body2d;
+			b->city = tile->city;
+			e->add_component_p(b);
+			city->buildings->add_child(e);
+
+			building = b;
+		}
+			break;
+		case BuildingFarm:
+		{
+			auto b = new cFarm;
+			b->element = element;
+			b->body2d = body2d;
+			b->city = tile->city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -492,16 +574,6 @@ void cBuilding::on_init()
 	});
 }
 
-void cConstruction::on_init()
-{
-	cBuilding::on_init();
-	element->drawers.add([this](graphics::CanvasPtr canvas) {
-		auto pos = element->global_pos();
-		auto len = ((float)production / (float)need_production) * 20.f;
-		canvas->draw_rect_filled(pos + vec2(-len * 0.5f, -3.f), pos + vec2(len * 0.5f, -1.f), cvec4(100, 100, 100, 255));
-	});
-}
-
 void cConstruction::update()
 {
 	if (city->production > 0)
@@ -510,6 +582,7 @@ void cConstruction::update()
 		p = min(p, city->production);
 		city->production -= p;
 		production += p;
+
 		if (production >= need_production)
 		{
 			add_event([this]() {
@@ -518,23 +591,23 @@ void cConstruction::update()
 				return false;
 			});
 		}
-		else
-		{
-			add_event([this]() {
-				auto parent = entity->parent;
-				parent->remove_child(entity, false);
-				parent->add_child(entity);
-				return false;
-			});
-		}
 	}
+}
+
+void cConstruction::on_show_ui(sHudPtr hud)
+{
+	hud->begin_layout(HudHorizontal);
+	hud->push_style_var(HudStyleVarFontSize, vec4(20.f, 0.f, 0.f, 0.f));
+	hud->text(std::format(L"{}/{}{}", production, need_production, icon_production));
+	hud->pop_style_var(HudStyleVarFontSize);
+	hud->end_layout();
 }
 
 void cCity::update()
 {
 	remaining_food += food_production;
 
-	if (remaining_food >= 15)
+	if (remaining_food >= 9000)
 	{
 		remaining_food = 0;
 		population += 1;
@@ -543,9 +616,9 @@ void cCity::update()
 	production = production_next_turn;
 	food_production = food_production_next_turn;
 	production_next_turn = 0;
-	production_next_turn += 1; // 1 from city
+	production_next_turn += 2; // 1 from city
 	food_production_next_turn = -population * 2;
-	food_production_next_turn += 2; // 2 from city
+	food_production_next_turn += 3; // 2 from city
 
 	free_population = population;
 	free_production = production;
@@ -564,6 +637,39 @@ void cElementCollector::update()
 		case ElementWater: player->water_element++; break;
 		case ElementGrass: player->grass_element++; break;
 		}
+	}
+}
+
+void cSteamEngine::update()
+{
+	working = false;
+	if (city->free_population > 0)
+	{
+		city->free_population -= 1;
+		city->production_next_turn += 2;
+		working = true;
+	}
+}
+
+void cWaterWheel::update()
+{
+	working = false;
+	if (city->free_population > 0)
+	{
+		city->free_population -= 1;
+		city->production_next_turn += 2;
+		working = true;
+	}
+}
+
+void cFarm::update()
+{
+	working = false;
+	if (city->free_population > 0)
+	{
+		city->free_population -= 1;
+		city->food_production_next_turn += 2;
+		working = true;
 	}
 }
 
@@ -697,6 +803,7 @@ cBullet* create_bullet(const vec2& pos, const vec2& velocity, ElementType elemen
 
 cTile* hovering_tile = nullptr;
 cTile* selecting_tile = nullptr;
+float select_tile_time = 0.f;
 
 void on_contact(EntityPtr a, EntityPtr b)
 {
@@ -746,6 +853,8 @@ void Game::init()
 
 	Path::set_root(L"assets", L"assets");
 
+	canvas = hud->canvas;
+
 	img_tile = graphics::Image::get(L"assets/tile.png");
 	img_tile_select = graphics::Image::get(L"assets/tile_select.png");
 	img_building = graphics::Image::get(L"assets/building.png");
@@ -754,6 +863,10 @@ void Game::init()
 	img_food = graphics::Image::get(L"assets/food.png");
 	img_population = graphics::Image::get(L"assets/population.png");
 	img_production = graphics::Image::get(L"assets/production.png");
+
+	canvas->register_icon(icon_food, img_food->desc());
+	canvas->register_icon(icon_population, img_population->desc());
+	canvas->register_icon(icon_production, img_production->desc());
 
 	auto root = world->root.get();
 
@@ -818,6 +931,7 @@ void Game::init()
 					break;
 				case "click"_h:
 					selecting_tile = tile;
+					select_tile_time = total_time;
 					break;
 				}
 			});
@@ -922,73 +1036,91 @@ void Game::init()
 
 bool Game::on_update()
 {
-	if (auto canvas = hud->canvas; canvas)
+	UniverseApplication::on_update();
+
+	auto screen_size = canvas->size;
+
+	hud->begin("top"_h, vec2(0.f, 0.f), vec2(screen_size.x, 24.f), cvec4(0, 0, 0, 255));
+	hud->begin_layout(HudHorizontal);
+	hud->rect(vec2(16.f), cvec4(255, 127, 127, 255));
+	hud->text(std::format(L"{}", main_player->fire_element));
+	hud->rect(vec2(16.f), cvec4(127, 127, 255, 255));
+	hud->text(std::format(L"{}", main_player->water_element));
+	hud->rect(vec2(16.f), cvec4(127, 255, 127, 255));
+	hud->text(std::format(L"{}", main_player->grass_element));
+	hud->end_layout();
+	hud->end();
+
+	hud->begin("round"_h, vec2(screen_size.x * 0.5f, 0.f), vec2(0.f), vec2(0.5f, 0.f));
+	hud->text(std::format(L"{}", (int)round_timer));
+	hud->end();
+
+	if (selecting_tile)
 	{
-		auto screen_size = canvas->size;
+		auto bottom_pannel_height = 50.f;
+		hud->begin("bottom_right"_h, vec2(screen_size), vec2(0.f), vec2(min(0.2f, total_time - select_tile_time) * 5.f, 1.f));
+		tile_select->entity->set_enable(true);
+		tile_select->set_pos(selecting_tile->element->pos);
 
-		hud->begin("top"_h, vec2(0.f, 0.f), vec2(screen_size.x, 24.f), cvec4(0, 0, 0, 255));
-		hud->begin_layout(HudHorizontal);
-		hud->rect(vec2(16.f), cvec4(255, 127, 127, 255));
-		hud->text(std::format(L"{}", main_player->fire_element));
-		hud->rect(vec2(16.f), cvec4(127, 127, 255, 255));
-		hud->text(std::format(L"{}", main_player->water_element));
-		hud->rect(vec2(16.f), cvec4(127, 255, 127, 255));
-		hud->text(std::format(L"{}", main_player->grass_element));
-		hud->end_layout();
-		hud->end();
-
-		hud->begin("round"_h, vec2(screen_size.x * 0.5f, 0.f), vec2(0.f), cvec4(0, 0, 0, 255));
-		hud->text(std::format(L"{}", (int)round_timer));
-		hud->end();
-
-		if (selecting_tile)
+		auto city = selecting_tile->city;
+		if (city && city->player == main_player)
 		{
-			auto bottom_pannel_height = 50.f;
-			hud->begin("bottom_right"_h, vec2(screen_size), vec2(0.f), cvec4(0, 0, 0, 255), vec2(1.f));
-			tile_select->entity->set_enable(true);
-			tile_select->set_pos(selecting_tile->element->pos);
-
-			auto city = selecting_tile->city;
-			if (city && city->player == main_player)
+			if (city->tile == selecting_tile)
 			{
-				if (city->tile == selecting_tile)
+				hud->push_style_var(HudStyleVarFontSize, vec4(20.f, 0.f, 0.f, 0.f));
+
+				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+				hud->progress_bar(vec2(200.f, 24.f), (float)city->hp / (float)city->hp_max,
+					cvec4(127, 255, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{}/{}", city->hp, city->hp_max));
+				hud->pop_style_color(HudStyleColorText);
+
+				hud->begin_layout(HudHorizontal);
+				hud->text(std::format(L"{}{}", city->population, icon_population));
+				hud->text(std::format(L"{}{}", city->food_production, icon_food));
+				hud->text(std::format(L"{}{}", city->production, icon_production));
+				hud->end_layout();
+
+				hud->begin_layout(HudHorizontal);
+				hud->text(std::format(L"Next Citizen{}", icon_population));
+				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+				hud->progress_bar(vec2(100.f, 24.f), (float)city->remaining_food / (float)9000,
+					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{}/{}", city->remaining_food, 9000));
+				hud->pop_style_color(HudStyleColorText);
+				hud->image(vec2(20.f), img_food->desc());
+				hud->end_layout();
+
+				hud->pop_style_var(HudStyleVarFontSize);
+			}
+			else
+			{
+				if (auto building = city->get_building(selecting_tile); building)
 				{
 					hud->begin_layout(HudHorizontal);
-					hud->image(vec2(20.f), img_population);
-					hud->text(std::format(L"{}", city->population));
-					hud->image(vec2(20.f), img_food);
-					hud->text(std::format(L"{}", city->food_production));
-					hud->image(vec2(20.f), img_production);
-					hud->text(std::format(L"{}", city->production));
+					hud->text(std::format(L"{}/{}", building->hp, building->hp_max));
 					hud->end_layout();
+					building->on_show_ui(hud);
 				}
 				else
 				{
-					if (auto building = city->get_building(selecting_tile); building)
+					hud->text(L"Select a construction:");
+					for (auto type : available_constructions)
 					{
-
-					}
-					else
-					{
-						for (auto i = (int)BuildingElementCollector; i < BuildingTypeCount; i++)
+						if (hud->button(get_building_name(type)))
 						{
-							auto type = (BuildingType)i;
-							if (hud->button(get_building_name(type)))
-							{
-								auto construction = (cConstruction*)main_player->add_building(BuildingConstruction, selecting_tile);
-								construction->construct_building = type;
-								construction->need_production = 30;
-							}
+							auto construction = (cConstruction*)main_player->add_building(BuildingConstruction, selecting_tile);
+							construction->construct_building = type;
+							construction->need_production = 1200;
 						}
 					}
 				}
 			}
-
-			hud->end();
 		}
-		else
-			tile_select->entity->set_enable(false);
+
+		hud->end();
 	}
+	else
+		tile_select->entity->set_enable(false);
+	tile_select->entity->set_enable(false);
 
 	round_timer -= delta_time;
 	sig_round = false;
@@ -1005,8 +1137,6 @@ bool Game::on_update()
 		sig_turn = true;
 		turn_timer = turn_time;
 	}
-
-	UniverseApplication::on_update();
 
 	{
 		auto n = e_characters_root->children.size();
@@ -1064,15 +1194,6 @@ bool Game::on_update()
 	}
 
 	return true;
-}
-
-void Game::on_render()
-{
-	UniverseApplication::on_render();
-}
-
-void Game::on_gui()
-{
 }
 
 Game game;
