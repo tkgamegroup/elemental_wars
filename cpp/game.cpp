@@ -124,7 +124,7 @@ struct cTile : Component
 
 	uint id;
 	ElementType element_type;
-	cCity* city = nullptr;
+	cCity* owner_city = nullptr;
 
 	cTile* tile_lt = nullptr;
 	cTile* tile_t = nullptr;
@@ -140,6 +140,46 @@ struct cTile : Component
 
 	void on_init() override;
 };
+
+std::vector<cTile*> get_nearby_tiles(cTile* tile, uint level = 1)
+{
+	if (level == 0)
+		return {};
+	std::vector<cTile*> ret;
+	int start_idx = -1;
+	int end_idx = 0;
+	auto add_tile = [&](cTile* t) {
+		for (auto& _t : ret)
+		{
+			if (_t == t)
+				return;
+		}
+		ret.push_back(t);
+	};
+	while (level > 0)
+	{
+		for (auto i = start_idx; i != end_idx; i++)
+		{
+			auto t = i == -1 ? tile : ret[i];
+			if (t->tile_lt)
+				add_tile(t->tile_lt);
+			if (t->tile_t)
+				add_tile(t->tile_t);
+			if (t->tile_rt)
+				add_tile(t->tile_rt);
+			if (t->tile_lb)
+				add_tile(t->tile_lb);
+			if (t->tile_b)
+				add_tile(t->tile_b);
+			if (t->tile_rb)
+				add_tile(t->tile_rb);
+		}
+		start_idx = end_idx;
+		end_idx = ret.size();
+		level--;
+	}
+	return ret;
+}
 
 EntityPtr e_tiles_root = nullptr;
 cElementPtr tile_hover = nullptr;
@@ -194,7 +234,6 @@ struct cCity : cBuilding
 	int free_production = 0;
 
 	std::vector<cTile*> territories;
-	std::vector<vec2> border_lines;
 
 	EntityPtr buildings = nullptr;
 
@@ -228,31 +267,7 @@ struct cCity : cBuilding
 		if (!has_territory(tile))
 		{
 			territories.push_back(tile);
-			tile->city = this;
-		}
-	}
-
-	void update_border_lines()
-	{
-		border_lines.clear();
-		for (auto t : territories)
-		{
-			vec2 pos[6];
-			auto c = t->element->pos;
-			for (auto i = 0; i < 6; i++)
-				pos[i] = arc_point(c, i * 60.f, tile_sz * 0.5f);
-			if (!t->tile_rb || !has_territory(t->tile_rb))
-				make_line_strips<2>(pos[0], pos[1], border_lines);
-			if (!t->tile_b || !has_territory(t->tile_b))
-				make_line_strips<2>(pos[1], pos[2], border_lines);
-			if (!t->tile_lb || !has_territory(t->tile_lb))
-				make_line_strips<2>(pos[2], pos[3], border_lines);
-			if (!t->tile_lt || !has_territory(t->tile_lt))
-				make_line_strips<2>(pos[3], pos[4], border_lines);
-			if (!t->tile_t || !has_territory(t->tile_t))
-				make_line_strips<2>(pos[4], pos[5], border_lines);
-			if (!t->tile_rt || !has_territory(t->tile_rt))
-				make_line_strips<2>(pos[5], pos[0], border_lines);
+			tile->owner_city = this;
 		}
 	}
 
@@ -381,6 +396,8 @@ struct cPlayer : Component
 
 	EntityPtr cities = nullptr;
 
+	std::vector<vec2> border_lines;
+
 	cPlayer() { type_hash = "cPlayer"_h; }
 	virtual ~cPlayer() {}
 
@@ -392,10 +409,9 @@ struct cPlayer : Component
 		entity->add_child(cities);
 	}
 
-	cBuilding* add_building(BuildingType type, cTile* tile)
+	cBuilding* add_building(cCity* city, BuildingType type, cTile* tile)
 	{
 		cBuilding* building = nullptr;
-		auto city = tile->city;
 		auto e = Entity::create();
 		auto element = e->add_component<cElement>();
 		element->pos = tile->element->pos;
@@ -427,7 +443,7 @@ struct cPlayer : Component
 			auto b = new cConstruction;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			b->hp = 0;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -449,8 +465,8 @@ struct cPlayer : Component
 			b->add_territory(tile->tile_lt);
 			b->add_territory(tile->tile_t);
 			b->add_territory(tile->tile_rt);
-			b->update_border_lines();
 			cities->add_child(e);
+			update_border_lines();
 
 			building = b;
 		}
@@ -460,7 +476,7 @@ struct cPlayer : Component
 			auto b = new cElementCollector;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -474,7 +490,7 @@ struct cPlayer : Component
 			auto b = new cCreatureMaker;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			switch (type)
 			{
 			case BuildingFireCreatureMaker: b->element_type = ElementFire; break;
@@ -492,7 +508,7 @@ struct cPlayer : Component
 			auto b = new cSteamEngine;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -504,7 +520,7 @@ struct cPlayer : Component
 			auto b = new cWaterWheel;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -516,7 +532,7 @@ struct cPlayer : Component
 			auto b = new cFarm;
 			b->element = element;
 			b->body2d = body2d;
-			b->city = tile->city;
+			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
@@ -556,6 +572,34 @@ struct cPlayer : Component
 		e_characters_root->add_child(e);
 		return c;
 	}
+
+	void update_border_lines()
+	{
+		border_lines.clear();
+		for (auto& c : cities->children)
+		{
+			auto city = c->get_component<cCity>();
+			for (auto t : city->territories)
+			{
+				vec2 pos[6];
+				auto c = t->element->pos;
+				for (auto i = 0; i < 6; i++)
+					pos[i] = arc_point(c, i * 60.f, tile_sz * 0.5f);
+				if (!t->tile_rb || !city->has_territory(t->tile_rb))
+					make_line_strips<2>(pos[0], pos[1], border_lines);
+				if (!t->tile_b || !city->has_territory(t->tile_b))
+					make_line_strips<2>(pos[1], pos[2], border_lines);
+				if (!t->tile_lb || !city->has_territory(t->tile_lb))
+					make_line_strips<2>(pos[2], pos[3], border_lines);
+				if (!t->tile_lt || !city->has_territory(t->tile_lt))
+					make_line_strips<2>(pos[3], pos[4], border_lines);
+				if (!t->tile_t || !city->has_territory(t->tile_t))
+					make_line_strips<2>(pos[4], pos[5], border_lines);
+				if (!t->tile_rt || !city->has_territory(t->tile_rt))
+					make_line_strips<2>(pos[5], pos[0], border_lines);
+			}
+		}
+	}
 };
 
 cPlayer* main_player = nullptr;
@@ -577,7 +621,7 @@ cPlayer* add_player(cTile* tile)
 	p->color = cvec4(rgbColor(vec3((1 - p->id) * 120.f, 0.7, 0.7f)) * 255.f, 255);
 	e->add_component_p(p);
 	e_players_root->add_child(e);
-	p->add_building(BuildingCity, tile);
+	p->add_building(nullptr, BuildingCity, tile);
 	return p;
 }
 
@@ -637,7 +681,7 @@ void cConstruction::update()
 		if (production >= need_production)
 		{
 			add_event([this]() {
-				player->add_building(construct_building, tile);
+				player->add_building(construct_building == BuildingCity ? nullptr : city, construct_building, tile);
 				entity->remove_from_parent();
 				return false;
 			});
@@ -961,6 +1005,8 @@ void Game::init()
 	canvas->register_ch_icon(ch_icon_population, img_population->desc());
 	canvas->register_ch_icon(ch_icon_production, img_production->desc());
 
+	hud->push_style_var(HudStyleVarWindowFrame, vec4(1.f, 0.f, 0.f, 0.f));
+
 	building_infos[BuildingFireTower] = {
 		.name = L"Element Collector"
 	};
@@ -1121,12 +1167,10 @@ void Game::init()
 			for (auto& p : e_players_root->children)
 			{
 				auto player = p->get_component<cPlayer>();
-				for (auto& c : player->cities->children)
-				{
-					auto city = c->get_component<cCity>();
-					canvas->path = city->border_lines;
-					canvas->stroke(2.f, player->color, false);
-				}
+				canvas->path = player->border_lines;
+				canvas->stroke(4.f, cvec4(255), false);
+				canvas->path = player->border_lines;
+				canvas->stroke(2.f, player->color, false);
 			}
 		});
 		e_element_root->add_child(e_layer);
@@ -1169,7 +1213,7 @@ void Game::init()
 
 	scene->set_world2d_contact_listener(on_contact);
 
-	renderer->add_render_task(RenderModeShaded, camera, main_window, {}, graphics::ImageLayoutPresent);
+	renderer->add_render_target(RenderMode2D, camera, main_window, {}, graphics::ImageLayoutPresent);
 }
 
 bool Game::on_update()
@@ -1207,7 +1251,7 @@ bool Game::on_update()
 
 		hud->begin("selecting_tile"_h, vec2(screen_size), vec2(0.f), vec2(min(0.2f, total_time - select_tile_time) * 5.f, 1.f));
 
-		auto city = selecting_tile->city;
+		auto city = selecting_tile->owner_city;
 		if (city && city->player == main_player)
 		{
 			if (city->tile == selecting_tile)
@@ -1244,12 +1288,20 @@ bool Game::on_update()
 				hud->text(L"Select a production:");
 				if (hud->button(L"New City"))
 				{
-					begin_select_tile([city](cTile* tile) {
+					auto cands = get_nearby_tiles(city->tile, 3);
+					begin_select_tile([city, &cands](cTile* tile) {
 						if (city->has_territory(tile))
 							return false;
-						return distance(tile->element->pos, city->tile->element->pos) < tile_sz * 4.f;
-					}, [](cTile* tile) {
-
+						for (auto c : cands)
+						{
+							if (c == tile)
+								return true;
+						}
+						return false;
+					}, [city](cTile* tile) {
+						auto construction = (cConstruction*)main_player->add_building(city, BuildingConstruction, tile);
+						construction->construct_building = BuildingCity;
+						construction->need_production = 1200;
 					});
 				}
 				hud->end_layout();
@@ -1288,7 +1340,7 @@ bool Game::on_update()
 							hud->push_enable(false);
 						if (hud->button(info.name))
 						{
-							auto construction = (cConstruction*)main_player->add_building(BuildingConstruction, selecting_tile);
+							auto construction = (cConstruction*)main_player->add_building(city, BuildingConstruction, selecting_tile);
 							construction->construct_building = type;
 							construction->need_production = 1200;
 						}
