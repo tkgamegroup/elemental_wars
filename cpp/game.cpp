@@ -93,6 +93,8 @@ const wchar_t* get_element_name(ElementType type)
 	return L"";
 }
 
+float element_effectiveness[ElementCount][ElementCount]; // attacker, defender
+
 const wchar_t ch_color_white = graphics::CH_COLOR_BEGIN + 0;
 const wchar_t ch_color_black = graphics::CH_COLOR_BEGIN + 1;
 const wchar_t ch_color_yes = graphics::CH_COLOR_BEGIN + 2;
@@ -139,14 +141,26 @@ BuildingInfo building_infos[BuildingTypeCount];
 
 std::vector<BuildingType> available_constructions = { BuildingSteamMachine, BuildingFireBarracks, BuildingWaterWheel, BuildingWaterBarracks, BuildingFarm, BuildingGrassBarracks };
 
+enum CharacterType
+{
+	CharacterFireElemental,
+	CharacterWaterElemental,
+	CharacterGrassElemental,
+
+	CharacterTypeCount
+};
+
 struct CharacterInfo
 {
 	std::wstring name;
 	uint hp_max = 3000;
+	ElementType element_type;
 	graphics::ImagePtr image = nullptr;
 };
+CharacterInfo character_infos[CharacterTypeCount];
 
 struct cPlayer;
+struct cBuilding;
 struct cCity;
 
 struct cTile : Component
@@ -157,6 +171,7 @@ struct cTile : Component
 	uint id;
 	ElementType element_type;
 	cCity* owner_city = nullptr;
+	cBuilding* building = nullptr;
 
 	cTile* tile_lt = nullptr;
 	cTile* tile_t = nullptr;
@@ -226,9 +241,10 @@ struct cBuilding : Component
 	cCity* city = nullptr;
 	cTile* tile = nullptr;
 
+	BuildingType type;
 	bool dead = false;
-	int hp = 3000;
-	int hp_max = 3000;
+	int hp = 1;
+	int hp_max = 1;
 	bool working = false;
 
 	cBuilding() { type_hash = "cBuilding"_h; }
@@ -382,6 +398,7 @@ struct cCharacter : Component
 
 	uint id = 0;
 	cvec4 color;
+	BuildingType type;
 	bool dead = false;
 	ElementType element_type;
 	int hp = 10;
@@ -475,7 +492,8 @@ struct cPlayer : Component
 		auto body2d = e->add_component<cBody2d>();
 		body2d->type = physics::BodyStatic;
 		body2d->shape_type = physics::ShapeCircle;
-		body2d->radius = element->ext.x * 0.5f;
+		//body2d->radius = element->ext.x * 0.4f;
+		body2d->radius = 0.f;
 		body2d->friction = 0.3f;
 		body2d->collide_bit = 1 << id;
 		switch (type)
@@ -492,7 +510,6 @@ struct cPlayer : Component
 			b->image = image;
 			b->body2d = body2d;
 			b->city = city;
-			b->hp_max = info.hp_max;
 			b->hp = 0;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -508,8 +525,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			e->add_component_p(b);
 
 			b->add_territory(tile);
@@ -531,8 +546,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -546,8 +559,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city; 
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -561,8 +572,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -576,8 +585,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -591,8 +598,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -606,8 +611,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -621,8 +624,6 @@ struct cPlayer : Component
 			b->element = element;
 			b->image = image;
 			b->body2d = body2d;
-			b->hp_max = info.hp_max;
-			b->hp = info.hp_max;
 			b->city = city;
 			e->add_component_p(b);
 			city->buildings->add_child(e);
@@ -633,20 +634,26 @@ struct cPlayer : Component
 		}
 		building->player = this;
 		building->tile = tile;
+		building->type = type;
+		building->hp_max = info.hp_max;
+		if (building->hp > 0)
+			building->hp = info.hp_max;
+		tile->building = building;
 		return building;
 	}
 
-	cCharacter* add_character(const vec2& pos, ElementType element_type)
+	cCharacter* add_character(const vec2& pos, CharacterType type)
 	{
-		auto color = get_element_color(element_type);
+		auto& info = character_infos[type];
 		auto e = Entity::create();
 		auto element = e->add_component<cElement>();
 		element->pos = pos;
-		element->ext = vec2(tile_sz * 0.5f);
+		element->ext = vec2(tile_sz * 0.3f);
 		element->pivot = vec2(0.5f);
 		auto image = e->add_component<cImage>();
-		image->image = img_sprite;
-		image->tint_col = color;
+		image->image = info.image ? info.image : img_sprite;
+		if (!info.image)
+			image->tint_col = get_element_color(info.element_type);
 		auto body2d = e->add_component<cBody2d>();
 		body2d->shape_type = physics::ShapeCircle;
 		body2d->radius = element->ext.x * 0.5f;
@@ -658,7 +665,9 @@ struct cPlayer : Component
 		c->player = this;
 		c->id = character_id++;
 		c->color = color;
-		c->element_type = element_type;
+		c->element_type = info.element_type;
+		c->hp_max = info.hp_max;
+		c->hp = info.hp_max;
 		e->add_component_p(c);
 		e_characters_root->add_child(e);
 		return c;
@@ -758,10 +767,10 @@ void cConstruction::on_init()
 
 void cConstruction::update()
 {
-	if (city->production > 0)
+	if (city->free_production > 0)
 	{
 		auto p = need_production - production;
-		p = min(p, city->production);
+		p = min(p, city->free_production);
 		city->free_production -= p;
 		production += p;
 		hp += p * hp_max / need_production;
@@ -862,7 +871,7 @@ void cFireBarracks::update()
 	if (sig_round)
 	{
 		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), ElementFire);
+		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterFireElemental);
 	}
 }
 
@@ -871,7 +880,7 @@ void cWaterBarracks::update()
 	if (sig_round)
 	{
 		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), ElementWater);
+		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterWaterElemental);
 	}
 }
 
@@ -880,7 +889,7 @@ void cGrassBarracks::update()
 	if (sig_round)
 	{
 		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), ElementGrass);
+		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterGrassElemental);
 	}
 }
 
@@ -889,7 +898,7 @@ void cCharacter::on_init()
 	element->drawers.add([this](graphics::CanvasPtr canvas) {
 		auto pos = (element->global_pos0() + element->global_pos1()) * 0.5f;
 		auto r = element->ext.x * 0.5f;
-		canvas->draw_circle(pos, r, 2.f, player->color, 0.f, (float)hp / (float)hp_max);
+		canvas->draw_circle(pos, r, 1.f, player->color, 0.f, (float)hp / (float)hp_max);
 	});
 }
 
@@ -979,7 +988,7 @@ cBullet* create_bullet(const vec2& pos, const vec2& velocity, ElementType elemen
 	auto e = Entity::create();
 	auto element = e->add_component<cElement>();
 	element->pos = pos;
-	element->ext = vec2(5.f);
+	element->ext = vec2(2.f);
 	element->pivot = vec2(0.5f);
 	auto image = e->add_component<cImage>();
 	image->image = img_sprite;
@@ -1029,7 +1038,7 @@ void on_contact(EntityPtr a, EntityPtr b)
 		if (character->player->id != bullet->player_id)
 		{
 			bullet->dead = true;
-			character->hp -= 1;
+			character->hp -= 10 * element_effectiveness[bullet->element_type][character->element_type];
 			if (character->hp <= 0)
 				character->dead = true;
 		}
@@ -1142,6 +1151,31 @@ void Game::init()
 	hud->push_style_sound(HudStyleSoundButtonHover, sound_hover);
 	hud->push_style_sound(HudStyleSoundButtonClicked, sound_clicked);
 
+	{
+		auto effectiveness = element_effectiveness[ElementFire];
+		effectiveness[ElementFire] = 1.f;
+		effectiveness[ElementWater] = 0.5f;
+		effectiveness[ElementGrass] = 2.f;
+	}
+	{
+		auto effectiveness = element_effectiveness[ElementWater];
+		effectiveness[ElementFire] = 2.f;
+		effectiveness[ElementWater] = 1.f;
+		effectiveness[ElementGrass] = 0.5f;
+	}
+	{
+		auto effectiveness = element_effectiveness[ElementGrass];
+		effectiveness[ElementFire] = 0.5f;
+		effectiveness[ElementWater] = 2.f;
+		effectiveness[ElementGrass] = 1.f;
+	}
+
+	building_infos[BuildingCity] = {
+		.name = L"City"
+	};
+	building_infos[BuildingConstruction] = {
+		.name = L"Construction"
+	};
 	building_infos[BuildingFireTower] = {
 		.name = L"Element Collector"
 	};
@@ -1189,6 +1223,22 @@ void Game::init()
 		.description = std::format(L"Provide Food\n+2{}{}{}", ch_color_white, ch_icon_food, ch_color_end),
 		.require_tile_type = ElementGrass,
 		.image = graphics::Image::get(L"assets/farm.png")
+	};
+
+	character_infos[CharacterFireElemental] = {
+		.name = L"Fire Elemental",
+		.element_type = ElementFire,
+		.image = graphics::Image::get(L"assets/fire_elemental.png")
+	};
+	character_infos[CharacterWaterElemental] = {
+		.name = L"Water Elemental",
+		.element_type = ElementWater,
+		.image = graphics::Image::get(L"assets/water_elemental.png")
+	};
+	character_infos[CharacterGrassElemental] = {
+		.name = L"Grass Elemental",
+		.element_type = ElementGrass,
+		.image = graphics::Image::get(L"assets/grass_elemental.png")
 	};
 
 	auto root = world->root.get();
@@ -1422,10 +1472,12 @@ bool Game::on_update()
 		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 		hud->begin("selecting_tile"_h, vec2(screen_size), vec2(0.f), vec2(min(0.2f, total_time - select_tile_time) * 5.f, 1.f));
 
-		auto city = selecting_tile->owner_city;
-		if (city && city->player == main_player)
+		auto owner_city = selecting_tile->owner_city;
+		auto building = selecting_tile->building;
+		if (building)
 		{
-			if (city->tile == selecting_tile)
+			auto& info = building_infos[building->type];
+			if (building->type == BuildingCity && owner_city->player == main_player)
 			{
 				hud->begin_layout(HudHorizontal);
 
@@ -1433,22 +1485,22 @@ bool Game::on_update()
 				hud->push_style_var(HudStyleVarFontSize, vec4(20.f, 0.f, 0.f, 0.f));
 
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
-				hud->progress_bar(vec2(200.f, 24.f), (float)city->hp / (float)city->hp_max,
-					cvec4(127, 255, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{}/{}", int(city->hp / 100), int(city->hp_max / 100)));
+				hud->progress_bar(vec2(200.f, 24.f), (float)owner_city->hp / (float)owner_city->hp_max,
+					cvec4(127, 255, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{}/{}", int(owner_city->hp / 100), int(owner_city->hp_max / 100)));
 				hud->pop_style_color(HudStyleColorText);
 
 				hud->begin_layout(HudHorizontal);
-				hud->text(std::format(L"{}{}{}{}", city->population, ch_color_white, ch_icon_population, ch_color_end));
-				hud->text(std::format(L"{}{}{}{}", city->food_production, ch_color_white, ch_icon_food, ch_color_end));
-				hud->text(std::format(L"{}{}{}{}", city->production, ch_color_white, ch_icon_production, ch_color_end));
+				hud->text(std::format(L"{}{}{}{}", owner_city->population, ch_color_white, ch_icon_population, ch_color_end));
+				hud->text(std::format(L"{}{}{}{}", owner_city->food_production, ch_color_white, ch_icon_food, ch_color_end));
+				hud->text(std::format(L"{}{}{}{}", owner_city->production, ch_color_white, ch_icon_production, ch_color_end));
 				hud->end_layout();
 
 				hud->begin_layout(HudHorizontal);
 				hud->text(std::format(L"Next Citizen{}{}{}", ch_color_white, ch_icon_population, ch_color_end));
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 				const auto food_to_produce_citizen = 9000;
-				hud->progress_bar(vec2(100.f, 24.f), (float)city->remaining_food / (float)food_to_produce_citizen,
-					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}", city->remaining_food / 100.f, food_to_produce_citizen / 100));
+				hud->progress_bar(vec2(100.f, 24.f), (float)owner_city->remaining_food / (float)food_to_produce_citizen,
+					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}", owner_city->remaining_food / 100.f, food_to_produce_citizen / 100));
 				hud->pop_style_color(HudStyleColorText);
 				hud->image(vec2(20.f), img_food->desc());
 				hud->end_layout();
@@ -1460,9 +1512,9 @@ bool Game::on_update()
 				hud->text(L"Select a production:");
 				if (hud->button(L"New City"))
 				{
-					auto cands = get_nearby_tiles(city->tile, 3);
-					begin_select_tile([city, &cands](cTile* tile) {
-						if (city->has_territory(tile))
+					auto cands = get_nearby_tiles(owner_city->tile, 3);
+					begin_select_tile([owner_city, &cands](cTile* tile) {
+						if (owner_city->has_territory(tile))
 							return false;
 						for (auto c : cands)
 						{
@@ -1470,8 +1522,8 @@ bool Game::on_update()
 								return true;
 						}
 						return false;
-					}, [city, cands](cTile* tile) {
-						if (city->has_territory(tile))
+					}, [owner_city, cands](cTile* tile) {
+						if (owner_city->has_territory(tile))
 							return;
 						auto ok = false;
 						for (auto c : cands)
@@ -1484,7 +1536,7 @@ bool Game::on_update()
 						}
 						if (ok)
 						{
-							auto construction = (cConstruction*)main_player->add_building(city, BuildingConstruction, tile);
+							auto construction = (cConstruction*)main_player->add_building(owner_city, BuildingConstruction, tile);
 							construction->construct_building = BuildingCity;
 							construction->need_production = building_infos[BuildingCity].need_production;
 						}
@@ -1496,81 +1548,83 @@ bool Game::on_update()
 			}
 			else
 			{
-				if (auto building = city->get_building(selecting_tile); building)
-				{
-					hud->begin_layout(HudHorizontal);
-					hud->text(std::format(L"{}/{}", int(building->hp / 100), int(building->hp_max / 100)));
-					hud->end_layout();
+				hud->push_style_color(HudStyleColorText, building->player->color);
+				hud->text(info.name);
+				hud->pop_style_color(HudStyleColorText);
+				hud->text(std::format(L"{}/{}", int(building->hp / 100), int(building->hp_max / 100)));
+				if (owner_city && owner_city->player == main_player)
 					building->on_show_ui(hud);
-				}
-				else
+			}
+		}
+		else
+		{
+			hud->begin_layout(HudHorizontal);
+
+			hud->begin_layout(HudVertical);
+			switch (selecting_tile->element_type)
+			{
+			case ElementFire: hud->text(std::format(L"{}{}{}Fire Tile  ", ch_color_elements[ElementFire], ch_icon_tile, ch_color_end)); break;
+			case ElementWater: hud->text(std::format(L"{}{}{}Water Tile  ", ch_color_elements[ElementWater], ch_icon_tile, ch_color_end)); break;
+			case ElementGrass: hud->text(std::format(L"{}{}{}Grass Tile  ", ch_color_elements[ElementGrass], ch_icon_tile, ch_color_end)); break;
+			}
+
+			if (owner_city && owner_city->player == main_player)
+			{
+				hud->text(L"Select a construction:");
+				for (auto type : available_constructions)
 				{
-					hud->begin_layout(HudHorizontal);
-
-					hud->begin_layout(HudVertical);
-					switch (selecting_tile->element_type)
+					auto& info = building_infos[type];
+					auto ok = true;
+					if (info.require_tile_type != ElementNone && info.require_tile_type != selecting_tile->element_type)
+						ok = false;
+					if (!ok)
+						hud->push_enable(false);
+					hud->push_style_image(HudStyleImageButton, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
+					hud->push_style_var(HudStyleVarBorder, 30.f * img_button_desc.border_uvs);
+					hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
+					hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
+					hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
+					hud->push_style_color(HudStyleColorButtonDisabled, cvec4(255, 255, 255, 255));
+					hud->push_style_color(HudStyleColorText, cvec4(255, 255, 255, 255));
+					hud->push_style_color(HudStyleColorTextDisabled, cvec4(180, 180, 180, 255));
+					if (hud->button(info.name, "construction"_h + (int)info.name.c_str()))
 					{
-					case ElementFire: hud->text(std::format(L"{}{}{}Fire Tile  ", ch_color_elements[ElementFire], ch_icon_tile, ch_color_end)); break;
-					case ElementWater: hud->text(std::format(L"{}{}{}Water Tile  ", ch_color_elements[ElementWater], ch_icon_tile, ch_color_end)); break;
-					case ElementGrass: hud->text(std::format(L"{}{}{}Grass Tile  ", ch_color_elements[ElementGrass], ch_icon_tile, ch_color_end)); break;
+						auto construction = (cConstruction*)main_player->add_building(owner_city, BuildingConstruction, selecting_tile);
+						construction->construct_building = type;
+						construction->need_production = info.need_production;
 					}
-
-					hud->text(L"Select a construction:");
-					for (auto type : available_constructions)
+					hud->pop_style_image(HudStyleImageButton);
+					hud->pop_style_image(HudStyleImageButtonHovered);
+					hud->pop_style_image(HudStyleImageButtonActive);
+					hud->pop_style_image(HudStyleImageButtonDisabled);
+					hud->pop_style_var(HudStyleVarBorder);
+					hud->pop_style_color(HudStyleColorButton);
+					hud->pop_style_color(HudStyleColorButtonHovered);
+					hud->pop_style_color(HudStyleColorButtonActive);
+					hud->pop_style_color(HudStyleColorButtonDisabled);
+					hud->pop_style_color(HudStyleColorText);
+					hud->pop_style_color(HudStyleColorTextDisabled);
+					if (!ok)
+						hud->pop_enable();
+					if (hud->item_hovered())
 					{
-						auto& info = building_infos[type];
-						auto ok = true;
-						if (info.require_tile_type != ElementNone && info.require_tile_type != selecting_tile->element_type)
-							ok = false;
+						popup_img = info.image;
+						popup_str = std::format(
+							L"{}{}{}\n"
+							L"{}{}{}",
+							ch_size_big, info.name, ch_size_end,
+							ch_size_medium, info.description, ch_size_end);
 						if (!ok)
-							hud->push_enable(false);
-						hud->push_style_image(HudStyleImageButton, img_button_desc);
-						hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
-						hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
-						hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
-						hud->push_style_var(HudStyleVarBorder, 30.f * img_button_desc.border_uvs);
-						hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
-						hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
-						hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
-						hud->push_style_color(HudStyleColorButtonDisabled, cvec4(255, 255, 255, 255));
-						hud->push_style_color(HudStyleColorText, cvec4(255, 255, 255, 255));
-						hud->push_style_color(HudStyleColorTextDisabled, cvec4(180, 180, 180, 255));
-						if (hud->button(info.name, "construction"_h + (int)info.name.c_str()))
-						{
-							auto construction = (cConstruction*)main_player->add_building(city, BuildingConstruction, selecting_tile);
-							construction->construct_building = type;
-							construction->need_production = info.need_production;
-						}
-						hud->pop_style_image(HudStyleImageButton);
-						hud->pop_style_image(HudStyleImageButtonHovered);
-						hud->pop_style_image(HudStyleImageButtonActive);
-						hud->pop_style_image(HudStyleImageButtonDisabled);
-						hud->pop_style_var(HudStyleVarBorder);
-						hud->pop_style_color(HudStyleColorButton);
-						hud->pop_style_color(HudStyleColorButtonHovered);
-						hud->pop_style_color(HudStyleColorButtonActive);
-						hud->pop_style_color(HudStyleColorButtonDisabled);
-						hud->pop_style_color(HudStyleColorText);
-						hud->pop_style_color(HudStyleColorTextDisabled);
-						if (!ok)
-							hud->pop_enable();
-						if (hud->item_hovered())
-						{
-							popup_img = info.image;
-							popup_str = std::format(
-								L"{}{}{}\n"
-								L"{}{}{}", 
-								ch_size_big, info.name, ch_size_end,
-								ch_size_medium, info.description, ch_size_end);
-							if (!ok)
-								popup_str += std::format(L"\n{}Can Only Build On {} Tile{}", ch_color_no, get_element_name(info.require_tile_type), ch_color_end);
-						}
+							popup_str += std::format(L"\n{}Can Only Build On {} Tile{}", ch_color_no, get_element_name(info.require_tile_type), ch_color_end);
 					}
-					hud->end_layout();
-
-					hud->end_layout();
 				}
 			}
+			hud->end_layout();
+
+			hud->end_layout();
 		}
 
 		hud->end();
@@ -1655,6 +1709,29 @@ bool Game::on_update()
 			}
 		}
 	}
+	{
+		for (auto& p : e_players_root->children)
+		{
+			auto player = p->get_component<cPlayer>();
+			for (auto& c : player->cities->children)
+			{
+				auto city = c->get_component<cCity>();
+				auto n = city->buildings->children.size();
+				for (auto i = 0; i < n; i++)
+				{
+					auto e = city->buildings->children[i].get();
+					auto b = e->get_base_component<cBuilding>();
+					if (b->dead)
+					{
+						b->tile->building = nullptr;
+						e->remove_from_parent();
+						i--;
+						n--;
+					}
+				}
+			}
+		}
+	}
 
 	if (input->mbtn[Mouse_Middle])
 		camera->element->add_pos(-input->mdisp);
@@ -1669,7 +1746,7 @@ bool Game::on_update()
 
 	if (input->mscroll != 0)
 	{
-		static float scales[] = { 1.f, 1.2f, 1.4f, 1.6f, 1.8f, 2.f, 2.5f, 3.f };
+		static float scales[] = { 1.f, 1.2f, 1.4f, 1.6f, 1.8f, 2.f, 2.5f, 3.f, 3.5f, 4.f, 4.5f, 5.f };
 		auto scl = camera->element->scl.x;
 		if (input->mscroll > 0)
 		{
