@@ -7,6 +7,7 @@
 #include <flame/audio/source.h>
 #include <flame/universe/components/element.h>
 #include <flame/universe/components/image.h>
+#include <flame/universe/components/polygon.h>
 #include <flame/universe/components/movie.h>
 #include <flame/universe/components/receiver.h>
 #include <flame/universe/components/camera.h>
@@ -16,7 +17,7 @@
 struct Game : UniverseApplication
 {
 	cCameraPtr camera = nullptr;
-	graphics::CanvasPtr canvas = nullptr;
+	graphics::CanvasPtr ui_canvas = nullptr;
 
 	void init();
 	bool on_update() override;
@@ -43,9 +44,10 @@ graphics::ImageDesc img_button_desc;
 graphics::ImagePtr img_food = nullptr;
 graphics::ImagePtr img_population = nullptr;
 graphics::ImagePtr img_production = nullptr;
-graphics::ImagePtr img_fire_tile = nullptr;
-graphics::ImagePtr img_water_tile = nullptr;
-graphics::ImagePtr img_grass_tile = nullptr;
+graphics::ImageAtlasPtr atlas_tiles = nullptr;
+graphics::ImageDesc img_fire_tile = {};
+graphics::ImageDesc img_water_tile = {};
+graphics::ImageDesc img_grass_tile = {};
 
 audio::BufferPtr sbuf_hover = nullptr;
 audio::SourcePtr sound_hover = nullptr;
@@ -166,7 +168,7 @@ struct cCity;
 struct cTile : Component
 {
 	cElementPtr element = nullptr;
-	cImagePtr image = nullptr;
+	cPolygonPtr polygon = nullptr;
 
 	uint id;
 	ElementType element_type;
@@ -700,6 +702,16 @@ struct cPlayer : Component
 			}
 		}
 	}
+
+	bool has_territory(cTile* tile)
+	{
+		for (auto& c : cities->children)
+		{
+			if (c->get_component<cCity>()->has_territory(tile))
+				return true;
+		}
+		return false;
+	}
 };
 
 cPlayer* main_player = nullptr;
@@ -728,40 +740,38 @@ cPlayer* add_player(cTile* tile)
 
 void cTile::on_init()
 {
-	element->drawers.add([this](graphics::CanvasPtr canvas) {
-		auto col = cvec4(255);
-
+	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 		if (highlighted)
 		{
 			auto v = clamp(sin(fract(total_time) * pi<float>()) * 0.25f + 0.25f, 0.f, 1.f);
-			image->set_tint_col(cvec4(cvec3(v * 255.f), 255));
+			polygon->color = cvec4(cvec3(v * 255.f), 255);
 		}
 		else
-			image->set_tint_col(col);
+			polygon->color = cvec4(255);
 	});
 }
 
-void draw_bar(graphics::CanvasPtr canvas, const vec2& p, float w, float h, const cvec4& col)
+void draw_bar(graphics::CanvasPtr ui_canvas, const vec2& p, float w, float h, const cvec4& col)
 {
-	canvas->draw_rect_filled(p, p + vec2(w, h), col);
+	ui_canvas->draw_rect_filled(p, p + vec2(w, h), col);
 }
 
 void cBuilding::on_init()
 {
-	element->drawers.add([this](graphics::CanvasPtr canvas) {
+	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 		const auto len = 20.f;
 		auto r = ((float)hp / (float)hp_max);
-		draw_bar(canvas, element->global_pos() - vec2(len * 0.5f, 5.f), r * len, 2, player->color);
+		draw_bar(ui_canvas, element->global_pos() - vec2(len * 0.5f, 5.f), r * len, 2, player->color);
 	});
 }
 
 void cConstruction::on_init()
 {
 	cBuilding::on_init();
-	element->drawers.add([this](graphics::CanvasPtr canvas) {
+	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 		const auto len = 20.f;
 		auto r = ((float)production / (float)need_production);
-		draw_bar(canvas, element->global_pos() - vec2(len * 0.5f, 3.f), r * len, 2, cvec4(255, 255, 127, 255));
+		draw_bar(ui_canvas, element->global_pos() - vec2(len * 0.5f, 3.f), r * len, 2, cvec4(255, 255, 127, 255));
 	});
 }
 
@@ -895,10 +905,10 @@ void cGrassBarracks::update()
 
 void cCharacter::on_init()
 {
-	element->drawers.add([this](graphics::CanvasPtr canvas) {
+	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 		auto pos = (element->global_pos0() + element->global_pos1()) * 0.5f;
 		auto r = element->ext.x * 0.5f;
-		canvas->draw_circle(pos, r, 1.f, player->color, 0.f, (float)hp / (float)hp_max);
+		ui_canvas->draw_circle(pos, r, 1.f, player->color, 0.f, (float)hp / (float)hp_max);
 	});
 }
 
@@ -1090,17 +1100,20 @@ void Game::init()
 {
 	srand(time(0));
 
-	create("Elemental Wars", uvec2(1280, 720), WindowStyleFrame | WindowStyleResizable, false, true,
-		{ {"mesh_shader"_h, 0} });
+	UniverseApplicationOptions app_options;
+	app_options.graphics_debug = true;
+	app_options.graphics_configs = { {"mesh_shader"_h, 0} };
+	create("Elemental Wars", uvec2(1280, 720), WindowStyleFrame | WindowStyleResizable, app_options);
 
 	Path::set_root(L"assets", L"assets");
 
-	canvas = hud->canvas;
+	ui_canvas = hud->canvas;
 
 	img_tile = graphics::Image::get(L"assets/tile.png");
-	img_fire_tile = graphics::Image::get(L"assets/fire_tile.png");
-	img_water_tile = graphics::Image::get(L"assets/water_tile.png");
-	img_grass_tile = graphics::Image::get(L"assets/grass_tile.png");
+	atlas_tiles = graphics::ImageAtlas::get(L"assets/tiles.png");
+	img_fire_tile = atlas_tiles->get_item("fire_tile"_h);
+	img_water_tile = atlas_tiles->get_item("water_tile"_h);
+	img_grass_tile = atlas_tiles->get_item("grass_tile"_h);
 	img_tile_select = graphics::Image::get(L"assets/tile_select.png");
 	img_building = graphics::Image::get(L"assets/building.png");
 	img_hammer1 = graphics::Image::get(L"assets/hammer1.png");
@@ -1116,19 +1129,21 @@ void Game::init()
 	img_button = graphics::Image::get(L"assets/button.png");
 	img_button_desc = img_button->desc_with_config();
 
-	canvas->register_ch_color(ch_color_white, cvec4(255, 255, 255, 255));
-	canvas->register_ch_color(ch_color_black, cvec4(0, 0, 0, 255));
-	canvas->register_ch_color(ch_color_yes, cvec4(72, 171, 90, 255));
-	canvas->register_ch_color(ch_color_no, cvec4(191, 102, 116, 255));
+	auto sp3 = graphics::Sampler::get(graphics::FilterLinear, graphics::FilterLinear, true, graphics::AddressClampToEdge);
+
+	ui_canvas->register_ch_color(ch_color_white, cvec4(255, 255, 255, 255));
+	ui_canvas->register_ch_color(ch_color_black, cvec4(0, 0, 0, 255));
+	ui_canvas->register_ch_color(ch_color_yes, cvec4(72, 171, 90, 255));
+	ui_canvas->register_ch_color(ch_color_no, cvec4(191, 102, 116, 255));
 	for (auto i = 0; i < ElementCount; i++)
-		canvas->register_ch_color(ch_color_elements[i], get_element_color((ElementType)i));
-	canvas->register_ch_size(ch_size_small, 16);
-	canvas->register_ch_size(ch_size_medium, 20);
-	canvas->register_ch_size(ch_size_big, 24);
-	canvas->register_ch_icon(ch_icon_tile, img_tile->desc());
-	canvas->register_ch_icon(ch_icon_food, img_food->desc());
-	canvas->register_ch_icon(ch_icon_population, img_population->desc());
-	canvas->register_ch_icon(ch_icon_production, img_production->desc());
+		ui_canvas->register_ch_color(ch_color_elements[i], get_element_color((ElementType)i));
+	ui_canvas->register_ch_size(ch_size_small, 16);
+	ui_canvas->register_ch_size(ch_size_medium, 20);
+	ui_canvas->register_ch_size(ch_size_big, 24);
+	ui_canvas->register_ch_icon(ch_icon_tile, img_tile->desc());
+	ui_canvas->register_ch_icon(ch_icon_food, img_food->desc());
+	ui_canvas->register_ch_icon(ch_icon_population, img_population->desc());
+	ui_canvas->register_ch_icon(ch_icon_production, img_production->desc());
 
 	sbuf_hover = audio::Buffer::get(L"assets/hover.wav");
 	sound_hover = audio::Source::create();
@@ -1258,6 +1273,7 @@ void Game::init()
 	e_tiles_root = Entity::create();
 	e_tiles_root->add_component<cElement>();
 	e_element_root->add_child(e_tiles_root);
+	auto stage_sz = vec2(tile_cx * tile_sz * 0.75f, tile_cy * tile_sz_y);
 	for (auto y = 0; y < tile_cy; y++)
 	{
 		for (auto x = 0; x < tile_cx; x++)
@@ -1270,30 +1286,36 @@ void Game::init()
 				element->pos.y += tile_sz_y * 0.5f;
 			element->ext = vec2(tile_sz, tile_sz_y);
 			element->pivot = vec2(0.5f);
-			auto image = e->add_component<cImage>();
-			image->image = img_tile;
+			auto polygon = e->add_component<cPolygon>();
+			polygon->image = atlas_tiles->image;
+			polygon->sampler = sp3;
 			auto tile = new cTile;
 			tile->element = element;
-			tile->image = image;
+			tile->polygon = polygon;
 			tile->id = id;
 			e->add_component_p(tile);
+			vec4 uvs;
 			switch (linearRand(0, 2))
 			{
 			case 0:
-				image->image = img_fire_tile;
-				image->sampler = graphics::Sampler::get(graphics::FilterLinear, graphics::FilterLinear, true, graphics::AddressClampToEdge);
+				uvs = img_fire_tile.uvs;
 				tile->element_type = ElementFire; 
 				break;
 			case 1:
-				image->image = img_water_tile;
-				image->sampler = graphics::Sampler::get(graphics::FilterLinear, graphics::FilterLinear, true, graphics::AddressClampToEdge);
+				uvs = img_water_tile.uvs;
 				tile->element_type = ElementWater; 
 				break;
 			case 2:
-				image->image = img_grass_tile;
-				image->sampler = graphics::Sampler::get(graphics::FilterLinear, graphics::FilterLinear, true, graphics::AddressClampToEdge);
+				uvs = img_grass_tile.uvs;
 				tile->element_type = ElementGrass; 
 				break;
+			}
+			auto uv0 = element->pos / stage_sz;
+			for (auto i = 0; i < 6; i++)
+			{
+				auto v = arc_point(vec2(0.f), i * 60.f, 1.f);
+				//polygon->add_pt(v * tile_sz * 0.5f, mix(uvs.xy(), uvs.zw(), fract(clamp(uv0 + (v * 0.5f + 0.5f) / vec2(tile_cx, tile_cy), vec2(0.001f), vec2(0.999f)) * 2.f)));
+				polygon->add_pt(v * tile_sz * 0.5f, mix(uvs.xy(), uvs.zw(), v * 0.5f + 0.5f));
 			}
 			auto receiver = e->add_component<cReceiver>();
 			receiver->event_listeners.add([tile](uint type, const vec2& value) {
@@ -1378,14 +1400,14 @@ void Game::init()
 	{
 		auto e_layer = Entity::create();
 		auto element = e_layer->add_component<cElement>();
-		element->drawers.add([this](graphics::CanvasPtr canvas) {
+		element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 			for (auto& p : e_players_root->children)
 			{
 				auto player = p->get_component<cPlayer>();
-				canvas->path = player->border_lines;
-				canvas->stroke(4.f, cvec4(255), false);
-				canvas->path = player->border_lines;
-				canvas->stroke(2.f, player->color, false);
+				ui_canvas->path = player->border_lines;
+				ui_canvas->stroke(4.f, cvec4(255), false);
+				ui_canvas->path = player->border_lines;
+				ui_canvas->stroke(2.f, player->color, false);
 			}
 		});
 		e_element_root->add_child(e_layer);
@@ -1428,14 +1450,15 @@ void Game::init()
 
 	scene->set_world2d_contact_listener(on_contact);
 
-	renderer->add_render_target(RenderMode2D, camera, main_window, {}, graphics::ImageLayoutPresent);
+	auto rt = renderer->add_render_target(RenderMode2D, camera, main_window, {}, graphics::ImageLayoutPresent);
+	//rt->canvas->enable_clipping = true; // slower..
 }
 
 bool Game::on_update()
 {
 	UniverseApplication::on_update();
 
-	auto screen_size = canvas->size;
+	auto screen_size = ui_canvas->size;
 
 	hud->begin("top"_h, vec2(0.f, 0.f), vec2(screen_size.x, 24.f), cvec4(0, 0, 0, 255));
 	hud->begin_layout(HudHorizontal);
@@ -1513,8 +1536,8 @@ bool Game::on_update()
 				if (hud->button(L"New City"))
 				{
 					auto cands = get_nearby_tiles(owner_city->tile, 3);
-					begin_select_tile([owner_city, &cands](cTile* tile) {
-						if (owner_city->has_territory(tile))
+					begin_select_tile([&cands](cTile* tile) {
+						if (main_player->has_territory(tile))
 							return false;
 						for (auto c : cands)
 						{
@@ -1523,7 +1546,7 @@ bool Game::on_update()
 						}
 						return false;
 					}, [owner_city, cands](cTile* tile) {
-						if (owner_city->has_territory(tile))
+						if (main_player->has_territory(tile))
 							return;
 						auto ok = false;
 						for (auto c : cands)
@@ -1551,7 +1574,12 @@ bool Game::on_update()
 				hud->push_style_color(HudStyleColorText, building->player->color);
 				hud->text(info.name);
 				hud->pop_style_color(HudStyleColorText);
-				hud->text(std::format(L"{}/{}", int(building->hp / 100), int(building->hp_max / 100)));
+
+				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+				hud->progress_bar(vec2(200.f, 24.f), (float)building->hp / (float)building->hp_max,
+					cvec4(127, 255, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{}/{}", int(building->hp / 100), int(building->hp_max / 100)));
+				hud->pop_style_color(HudStyleColorText);
+
 				if (owner_city && owner_city->player == main_player)
 					building->on_show_ui(hud);
 			}
@@ -1579,10 +1607,6 @@ bool Game::on_update()
 						ok = false;
 					if (!ok)
 						hud->push_enable(false);
-					hud->push_style_image(HudStyleImageButton, img_button_desc);
-					hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
-					hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
-					hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
 					hud->push_style_var(HudStyleVarBorder, 30.f * img_button_desc.border_uvs);
 					hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
 					hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
@@ -1590,16 +1614,16 @@ bool Game::on_update()
 					hud->push_style_color(HudStyleColorButtonDisabled, cvec4(255, 255, 255, 255));
 					hud->push_style_color(HudStyleColorText, cvec4(255, 255, 255, 255));
 					hud->push_style_color(HudStyleColorTextDisabled, cvec4(180, 180, 180, 255));
+					hud->push_style_image(HudStyleImageButton, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
+					hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
 					if (hud->button(info.name, "construction"_h + (int)info.name.c_str()))
 					{
 						auto construction = (cConstruction*)main_player->add_building(owner_city, BuildingConstruction, selecting_tile);
 						construction->construct_building = type;
 						construction->need_production = info.need_production;
 					}
-					hud->pop_style_image(HudStyleImageButton);
-					hud->pop_style_image(HudStyleImageButtonHovered);
-					hud->pop_style_image(HudStyleImageButtonActive);
-					hud->pop_style_image(HudStyleImageButtonDisabled);
 					hud->pop_style_var(HudStyleVarBorder);
 					hud->pop_style_color(HudStyleColorButton);
 					hud->pop_style_color(HudStyleColorButtonHovered);
@@ -1607,6 +1631,10 @@ bool Game::on_update()
 					hud->pop_style_color(HudStyleColorButtonDisabled);
 					hud->pop_style_color(HudStyleColorText);
 					hud->pop_style_color(HudStyleColorTextDisabled);
+					hud->pop_style_image(HudStyleImageButton);
+					hud->pop_style_image(HudStyleImageButtonHovered);
+					hud->pop_style_image(HudStyleImageButtonActive);
+					hud->pop_style_image(HudStyleImageButtonDisabled);
 					if (!ok)
 						hud->pop_enable();
 					if (hud->item_hovered())
