@@ -49,14 +49,22 @@ graphics::ImageDesc img_fire_tile = {};
 graphics::ImageDesc img_water_tile = {};
 graphics::ImageDesc img_grass_tile = {};
 
-audio::BufferPtr sbuf_hover = nullptr;
 audio::SourcePtr sound_hover = nullptr;
-
-audio::BufferPtr sbuf_clicked = nullptr;
 audio::SourcePtr sound_clicked = nullptr;
+audio::SourcePtr sound_construction_begin = nullptr;
+audio::SourcePtr sound_construction_end = nullptr;
+audio::SourcePtr sound_shot = nullptr;
+audio::SourcePtr sound_hit = nullptr;
 
-audio::BufferPtr sbuf_begin_construction = nullptr;
-audio::SourcePtr sound_begin_construction = nullptr;
+inline audio::SourcePtr load_sound_effect(const std::filesystem::path& path, float volumn)
+{
+	auto buf = audio::Buffer::get(path);
+	auto ret = audio::Source::create();
+	ret->add_buffer(buf);
+	ret->set_volumn(volumn);
+	ret->auto_replay = true;
+	return ret;
+}
 
 enum ElementType
 {
@@ -293,13 +301,15 @@ struct cCity : cBuilding
 	int production = 0;
 	int food_production = 0;
 
-	int remaining_food = 0;
+	int surplus_food = 0;
 
 	int production_next_turn = 0;
 	int food_production_next_turn = 0;
 
 	int free_population = 0;
 	int free_production = 0;
+
+	int food_to_produce_population = 0;
 
 	std::vector<cTile*> territories;
 
@@ -314,6 +324,14 @@ struct cCity : cBuilding
 		buildings->name = "buildings";
 		buildings->add_component<cElement>();
 		entity->add_child(buildings);
+
+		food_to_produce_population = calc_population_growth_needed_food();
+	}
+
+	int calc_population_growth_needed_food()
+	{
+		auto n = population - 1;
+		return (int(pow(n, 1.5f)) + 8 * n + 15) * 1000;
 	}
 
 	void update() override;
@@ -521,10 +539,10 @@ struct cPlayer : Component
 		e->add_child(e_content);
 		auto image = e_content->add_component<cImage>();
 		image->image = info.image ? info.image : img_building;
-		auto body2d = e_content->add_component<cBody2d>();
+		auto body2d = e->add_component<cBody2d>();
 		body2d->type = physics::BodyStatic;
 		body2d->shape_type = physics::ShapeCircle;
-		//body2d->radius = element->ext.x * 0.4f;
+		body2d->radius = element->ext.x * 0.5f;
 		body2d->radius = 0.f;
 		body2d->friction = 0.3f;
 		body2d->collide_bit = 1 << id;
@@ -542,7 +560,7 @@ struct cPlayer : Component
 			e->add_component_p(b);
 			city->buildings->add_child(e);
 
-			sound_begin_construction->play();
+			sound_construction_begin->play();
 
 			building = b;
 		}
@@ -822,7 +840,9 @@ void cConstruction::update()
 					player->add_building(construct_building == BuildingCity ? nullptr : city, construct_building, tile);
 					entity->remove_from_parent();
 					return false;
-					});
+				});
+
+				sound_construction_end->play();
 			}
 
 			low_priority = true;
@@ -854,12 +874,13 @@ void cCity::update()
 {
 	cBuilding::update();
 
-	remaining_food += food_production;
+	surplus_food += food_production;
 
-	if (remaining_food >= 9000)
+	if (surplus_food >= food_to_produce_population)
 	{
-		remaining_food = 0;
+		surplus_food = 0;
 		population += 1;
+		food_to_produce_population = calc_population_growth_needed_food();
 	}
 
 	production = production_next_turn;
@@ -1106,6 +1127,9 @@ cBullet* create_bullet(const vec2& pos, const vec2& velocity, ElementType elemen
 	b->vel = velocity;
 	e->add_component_p(b);
 	e_bullets_root->add_child(e);
+
+	sound_shot->play();
+
 	return b;
 }
 
@@ -1130,6 +1154,7 @@ void on_contact(EntityPtr a, EntityPtr b)
 	if ((!character && !building) || !bullet)
 		return;
 
+	auto hit = false;
 	if (character)
 	{
 		if (character->player->id != bullet->player_id)
@@ -1138,6 +1163,8 @@ void on_contact(EntityPtr a, EntityPtr b)
 			character->hp -= 10 * element_effectiveness[bullet->element_type][character->element_type];
 			if (character->hp <= 0)
 				character->dead = true;
+
+			hit = true;
 		}
 	}
 	if (building)
@@ -1148,8 +1175,12 @@ void on_contact(EntityPtr a, EntityPtr b)
 			building->hp -= 1;
 			if (building->hp <= 0)
 				building->dead = true;
+
+			hit = true;
 		}
 	}
+	if (hit)
+		sound_hit->play();
 }
 
 std::function<void(cTile*)> select_tile_callback;
@@ -1245,22 +1276,12 @@ void Game::init()
 	hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
 	hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
 
-	sbuf_hover = audio::Buffer::get(L"assets/hover.wav");
-	sound_hover = audio::Source::create();
-	sound_hover->add_buffer(sbuf_hover);
-	sound_hover->set_volumn(0.15f);
-	sound_hover->auto_replay = true;
-
-	sbuf_clicked = audio::Buffer::get(L"assets/clicked.wav");
-	sound_clicked = audio::Source::create();
-	sound_clicked->add_buffer(sbuf_clicked);
-	sound_clicked->set_volumn(0.35f);
-	sound_clicked->auto_replay = true;
-
-	sbuf_begin_construction = audio::Buffer::get(L"assets/begin_construction.wav");
-	sound_begin_construction = audio::Source::create();
-	sound_begin_construction->add_buffer(sbuf_begin_construction);
-	sound_begin_construction->set_volumn(0.35f);
+	sound_hover = load_sound_effect(L"assets/hover.wav", 0.15f);
+	sound_clicked = load_sound_effect(L"assets/clicked.wav", 0.35f);
+	sound_construction_begin = load_sound_effect(L"assets/construction_begin.wav", 0.35f);
+	sound_construction_end = load_sound_effect(L"assets/construction_end.wav", 0.35f);
+	sound_shot = load_sound_effect(L"assets/shot.wav", 0.25f);
+	sound_hit = load_sound_effect(L"assets/hit.wav", 0.3f);
 
 	{
 		auto effectiveness = element_effectiveness[ElementFire];
@@ -1282,7 +1303,9 @@ void Game::init()
 	}
 
 	building_infos[BuildingCity] = {
-		.name = L"City"
+		.name = L"City",
+		.need_production = 1,
+		.hp_max = 15000
 	};
 	building_infos[BuildingConstruction] = {
 		.name = L"Construction"
@@ -1641,13 +1664,15 @@ bool Game::on_update()
 				hud->end_layout();
 
 				hud->begin_layout(HudHorizontal);
-				hud->text(std::format(L"Next Population{}{}{}", ch_color_white, ch_icon_population, ch_color_end));
+				hud->text(std::format(L"{}{}{}Growth", ch_color_white, ch_icon_population, ch_color_end));
+				auto sec = (owner_city->food_to_produce_population - owner_city->surplus_food) / (owner_city->food_production * 60);
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
-				const auto food_to_produce_population = 9000;
-				hud->progress_bar(vec2(100.f, 24.f), (float)owner_city->remaining_food / (float)food_to_produce_population,
-					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}", owner_city->remaining_food / 100.f, food_to_produce_population / 100));
+				hud->progress_bar(vec2(130.f, 24.f), (float)owner_city->surplus_food / (float)owner_city->food_to_produce_population,
+					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}{}{}{}    {:02d}:{:02d}", 
+						owner_city->surplus_food / 100.f, owner_city->food_to_produce_population / 100,
+						ch_color_white, ch_icon_food, ch_color_end,
+						sec / 60, sec % 60));
 				hud->pop_style_color(HudStyleColorText);
-				hud->image(vec2(20.f), img_food->desc());
 				hud->end_layout();
 
 				hud->pop_style_var(HudStyleVarFontSize);
