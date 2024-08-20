@@ -308,7 +308,8 @@ struct cCity : cBuilding
 
 	int free_population = 0;
 	int free_production = 0;
-
+	bool no_production = false;
+	bool unapplied_population = false;
 	int food_to_produce_population = 0;
 
 	std::vector<cTile*> territories;
@@ -332,6 +333,25 @@ struct cCity : cBuilding
 	{
 		auto n = population - 1;
 		return (int(pow(n, 1.5f)) + 8 * n + 15) * 1000;
+	}
+
+	int apply_production(int v)
+	{
+		if (free_production <= 0)
+			return 0;
+		v = min(v, free_production);
+		free_production -= v;
+		no_production = false;
+		return v;
+	}
+
+	bool apply_population()
+	{
+		if (free_population <= 0)
+			return false;
+		free_population -= 1;
+		unapplied_population = false;
+		return true;
 	}
 
 	void update() override;
@@ -499,6 +519,7 @@ struct cPlayer : Component
 
 	uint id;
 	cvec4 color;
+	bool ai = false;
 
 	uint fire_element = 0;
 	uint water_element = 0;
@@ -519,175 +540,8 @@ struct cPlayer : Component
 		entity->add_child(cities);
 	}
 
-	cBuilding* add_building(cCity* city, BuildingType type, cTile* tile)
-	{
-		cBuilding* building = nullptr;
-		auto& info = building_infos[type];
-		auto e = Entity::create();
-		auto element = e->add_component<cElement>();
-		element->pos = tile->element->pos;
-		if (city)
-		{
-			element->pos -= city->element->pos;
-			element->pos += city->element->ext * city->element->pivot;
-		}
-		auto e_content = Entity::create();
-		auto element_content = e_content->add_component<cElement>();
-		element_content->pos = vec2(0.f, tile_sz * 0.3f);
-		element_content->pivot = vec2(0.5f, 1.f);
-		element_content->ext = vec2(tile_sz) * 0.6f;
-		e->add_child(e_content);
-		auto image = e_content->add_component<cImage>();
-		image->image = info.image ? info.image : img_building;
-		auto body2d = e->add_component<cBody2d>();
-		body2d->type = physics::BodyStatic;
-		body2d->shape_type = physics::ShapeCircle;
-		body2d->radius = element->ext.x * 0.5f;
-		body2d->radius = 0.f;
-		body2d->friction = 0.3f;
-		body2d->collide_bit = 1 << id;
-		switch (type)
-		{
-		case BuildingConstruction:
-		{
-			element->ext *= 0.7f;
-			auto movie = e->add_component<cMovie>();
-			movie->images.push_back(img_hammer1->desc());
-			movie->images.push_back(img_hammer2->desc());
-			movie->speed = 0.25f;
-			auto b = new cConstruction;
-			b->hp = 0;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			sound_construction_begin->play();
-
-			building = b;
-		}
-			break;
-		case BuildingCity:
-		{
-			auto b = new cCity;
-			e->add_component_p(b);
-
-			b->add_territory(tile);
-			b->add_territory(tile->tile_rb);
-			b->add_territory(tile->tile_b);
-			b->add_territory(tile->tile_lb);
-			b->add_territory(tile->tile_lt);
-			b->add_territory(tile->tile_t);
-			b->add_territory(tile->tile_rt);
-			cities->add_child(e);
-			update_border_lines();
-
-			building = b;
-		}
-			break;
-		case BuildingElementCollector:
-		{
-			auto b = new cElementCollector;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingFireBarracks:
-		{
-			auto b = new cFireBarracks;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingWaterBarracks:
-		{
-			auto b = new cWaterBarracks;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingGrassBarracks:
-		{
-			auto b = new cGrassBarracks;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingSteamMachine:
-		{
-			auto b = new cSteamMachine;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingWaterWheel:
-		{
-			auto b = new cWaterWheel;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		case BuildingFarm:
-		{
-			auto b = new cFarm;
-			e->add_component_p(b);
-			city->buildings->add_child(e);
-
-			building = b;
-		}
-			break;
-		}
-		building->player = this;
-		building->city = city;
-		building->tile = tile;
-		building->type = type;
-		building->hp_max = info.hp_max;
-		if (building->hp > 0)
-			building->hp = info.hp_max;
-		tile->building = building;
-		return building;
-	}
-
-	cCharacter* add_character(const vec2& pos, CharacterType type)
-	{
-		auto& info = character_infos[type];
-		auto e = Entity::create();
-		auto element = e->add_component<cElement>();
-		element->pos = pos;
-		element->ext = vec2(tile_sz * 0.3f);
-		element->pivot = vec2(0.5f);
-		auto image = e->add_component<cImage>();
-		image->image = info.image ? info.image : img_sprite;
-		if (!info.image)
-			image->tint_col = get_element_color(info.element_type);
-		auto body2d = e->add_component<cBody2d>();
-		body2d->shape_type = physics::ShapeCircle;
-		body2d->radius = element->ext.x * 0.5f;
-		body2d->friction = 0.3f;
-		body2d->collide_bit = 1 << id;
-		auto c = new cCharacter;
-		c->element = element;
-		c->body2d = body2d;
-		c->player = this;
-		c->id = character_id++;
-		c->color = color;
-		c->element_type = info.element_type;
-		c->hp_max = info.hp_max;
-		c->hp = info.hp_max;
-		e->add_component_p(c);
-		e_characters_root->add_child(e);
-		return c;
-	}
+	cBuilding* add_building(cCity* city, BuildingType type, cTile* tile);
+	cCharacter* add_character(const vec2& pos, CharacterType type);
 
 	void update_border_lines()
 	{
@@ -822,11 +676,8 @@ void cConstruction::update()
 
 	if (building_enable)
 	{
-		if (city->free_production > 0)
+		if (auto v = city->apply_production(need_production - production); v > 0)
 		{
-			auto v = need_production - production;
-			v = min(v, city->free_production);
-			city->free_production -= v;
 			production += v;
 
 			production_one_sec_accumulate += v;
@@ -842,7 +693,8 @@ void cConstruction::update()
 					return false;
 				});
 
-				sound_construction_end->play();
+				if (player == main_player)
+					sound_construction_end->play();
 			}
 
 			low_priority = true;
@@ -892,6 +744,8 @@ void cCity::update()
 
 	free_population = population;
 	free_production = production;
+	no_production = true;
+	unapplied_population = true;
 }
 
 void cElementCollector::update()
@@ -919,9 +773,8 @@ void cSteamMachine::update()
 	working = false;
 	if (building_enable)
 	{
-		if (city->free_population > 0)
+		if (city->apply_population())
 		{
-			city->free_population -= 1;
 			city->production_next_turn += 2;
 			working = true;
 		}
@@ -941,9 +794,8 @@ void cWaterWheel::update()
 	working = false;
 	if (building_enable)
 	{
-		if (city->free_population > 0)
+		if (city->apply_population())
 		{
-			city->free_population -= 1;
 			city->production_next_turn += 2;
 			working = true;
 		}
@@ -963,9 +815,8 @@ void cFarm::update()
 	working = false;
 	if (building_enable)
 	{
-		if (city->free_population > 0)
+		if (city->apply_population())
 		{
-			city->free_population -= 1;
 			city->food_production_next_turn += 2;
 			working = true;
 		}
@@ -1133,6 +984,177 @@ cBullet* create_bullet(const vec2& pos, const vec2& velocity, ElementType elemen
 	return b;
 }
 
+cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
+{
+	cBuilding* building = nullptr;
+	auto& info = building_infos[type];
+	auto e = Entity::create();
+	auto element = e->add_component<cElement>();
+	element->pos = tile->element->pos;
+	if (city)
+	{
+		element->pos -= city->element->pos;
+		element->pos += city->element->ext * city->element->pivot;
+	}
+	auto e_content = Entity::create();
+	auto element_content = e_content->add_component<cElement>();
+	element_content->pos = vec2(0.f, tile_sz * 0.3f);
+	element_content->pivot = vec2(0.5f, 1.f);
+	element_content->ext = vec2(tile_sz) * 0.6f;
+	e->add_child(e_content);
+	auto image = e_content->add_component<cImage>();
+	image->image = info.image ? info.image : img_building;
+	auto body2d = e->add_component<cBody2d>();
+	body2d->type = physics::BodyStatic;
+	body2d->shape_type = physics::ShapeCircle;
+	body2d->radius = element->ext.x * 0.5f;
+	body2d->radius = 0.f;
+	body2d->friction = 0.3f;
+	body2d->collide_bit = 1 << id;
+	switch (type)
+	{
+	case BuildingConstruction:
+	{
+		element->ext *= 0.7f;
+		auto movie = e->add_component<cMovie>();
+		movie->images.push_back(img_hammer1->desc());
+		movie->images.push_back(img_hammer2->desc());
+		movie->speed = 0.25f;
+		auto b = new cConstruction;
+		b->hp = 0;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		if (this == main_player)
+			sound_construction_begin->play();
+
+		building = b;
+	}
+	break;
+	case BuildingCity:
+	{
+		auto b = new cCity;
+		e->add_component_p(b);
+
+		b->add_territory(tile);
+		b->add_territory(tile->tile_rb);
+		b->add_territory(tile->tile_b);
+		b->add_territory(tile->tile_lb);
+		b->add_territory(tile->tile_lt);
+		b->add_territory(tile->tile_t);
+		b->add_territory(tile->tile_rt);
+		cities->add_child(e);
+		update_border_lines();
+
+		building = b;
+	}
+	break;
+	case BuildingElementCollector:
+	{
+		auto b = new cElementCollector;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingFireBarracks:
+	{
+		auto b = new cFireBarracks;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingWaterBarracks:
+	{
+		auto b = new cWaterBarracks;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingGrassBarracks:
+	{
+		auto b = new cGrassBarracks;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingSteamMachine:
+	{
+		auto b = new cSteamMachine;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingWaterWheel:
+	{
+		auto b = new cWaterWheel;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	case BuildingFarm:
+	{
+		auto b = new cFarm;
+		e->add_component_p(b);
+		city->buildings->add_child(e);
+
+		building = b;
+	}
+	break;
+	}
+	building->player = this;
+	building->city = city;
+	building->tile = tile;
+	building->type = type;
+	building->hp_max = info.hp_max;
+	if (building->hp > 0)
+		building->hp = info.hp_max;
+	tile->building = building;
+	return building;
+}
+
+cCharacter* cPlayer::add_character(const vec2& pos, CharacterType type)
+{
+	auto& info = character_infos[type];
+	auto e = Entity::create();
+	auto element = e->add_component<cElement>();
+	element->pos = pos;
+	element->ext = vec2(tile_sz * 0.3f);
+	element->pivot = vec2(0.5f);
+	auto image = e->add_component<cImage>();
+	image->image = info.image ? info.image : img_sprite;
+	if (!info.image)
+		image->tint_col = get_element_color(info.element_type);
+	auto body2d = e->add_component<cBody2d>();
+	body2d->shape_type = physics::ShapeCircle;
+	body2d->radius = element->ext.x * 0.5f;
+	body2d->friction = 0.3f;
+	body2d->collide_bit = 1 << id;
+	auto c = new cCharacter;
+	c->element = element;
+	c->body2d = body2d;
+	c->player = this;
+	c->id = character_id++;
+	c->color = color;
+	c->element_type = info.element_type;
+	c->hp_max = info.hp_max;
+	c->hp = info.hp_max;
+	e->add_component_p(c);
+	e_characters_root->add_child(e);
+	return c;
+}
+
 cTile* hovering_tile = nullptr;
 cTile* selecting_tile = nullptr;
 float select_tile_time = 0.f;
@@ -1267,6 +1289,7 @@ void Game::init()
 	hud->push_style_sound(HudStyleSoundButtonHover, sound_hover);
 	hud->push_style_sound(HudStyleSoundButtonClicked, sound_clicked);
 
+	hud->push_style_var(HudStyleVarButtonBorder, 30.f * img_button_desc.border_uvs);
 	hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
 	hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
 	hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
@@ -1510,11 +1533,7 @@ void Game::init()
 
 	main_player = add_player(e_tiles_root->children[int(tile_cx * 0.25f + tile_cy * 0.25f * tile_cx)]->get_component<cTile>());
 	auto opponent = add_player(e_tiles_root->children[int(tile_cx * 0.5f + tile_cy * 0.5f * tile_cx)]->get_component<cTile>());
-	{
-		auto city = opponent->cities->first_child()->get_component<cCity>();
-		auto tile = city->territories[1];
-		opponent->add_building(city, (BuildingType)(BuildingFireBarracks + tile->element_type), tile);
-	}
+	opponent->ai = true;
 
 	{
 		auto e_layer = Entity::create();
@@ -1576,6 +1595,41 @@ void Game::init()
 bool Game::on_update()
 {
 	UniverseApplication::on_update();
+	
+	for (auto& p : e_players_root->children)
+	{
+		auto player = p->get_component<cPlayer>();
+		if (player->ai)
+		{
+			for (auto& c : player->cities->children)
+			{
+				auto city = c->get_component<cCity>();
+				if (city->no_production)
+				{
+					for (auto tile : city->territories)
+					{
+						if (!tile->building)
+						{
+							std::vector<BuildingType> cands;
+							for (auto t : available_constructions)
+							{
+								if (auto et = building_infos[t].require_tile_type; et != ElementNone || et == tile->element_type)
+									cands.push_back(t);
+							}
+							if (!cands.empty())
+							{
+								auto type = random_item(cands);
+								auto construction = (cConstruction*)player->add_building(city, BuildingConstruction, tile);
+								construction->construct_building = type;
+								construction->need_production = building_infos[type].need_production;
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	auto screen_size = ui_canvas->size;
 
@@ -1602,11 +1656,32 @@ bool Game::on_update()
 	else
 		tile_hover->entity->set_enable(false);
 
+	std::wstring popup_str = L"";
+	graphics::ImagePtr popup_img = nullptr;
+
+	hud->push_style_color(HudStyleColorWindowBackground, cvec4(0, 0, 0, 0));
+	hud->push_style_var(HudStyleVarWindowFrame, vec4(0.f));
+	hud->begin("tips"_h, vec2(screen_size.x, screen_size.y - 200.f), vec2(0.f), vec2(1.f));
+	for (auto& c : main_player->cities->children)
+	{
+		auto city = c->get_component<cCity>();
+		if (city->no_production)
+		{
+			if (hud->button(L"No Production"))
+				;
+		}
+		if (city->unapplied_population)
+		{
+			if (hud->button(L"Unapplied Population"))
+				;
+		}
+	}
+	hud->end();
+	hud->pop_style_color(HudStyleColorWindowBackground);
+	hud->pop_style_var(HudStyleVarWindowFrame);
+
 	if (selecting_tile)
 	{
-		std::wstring popup_str = L"";
-		graphics::ImagePtr popup_img = nullptr;
-
 		hud->push_style_image(HudStyleImageWindowBackground, img_frame2_desc);
 		hud->push_style_var(HudStyleVarWindowBorder, 150.f * img_frame2_desc.border_uvs);
 		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
@@ -1664,10 +1739,12 @@ bool Game::on_update()
 				hud->end_layout();
 
 				hud->begin_layout(HudHorizontal);
-				hud->text(std::format(L"{}{}{}Growth", ch_color_white, ch_icon_population, ch_color_end));
+				hud->text(std::format(L"{}{}{}", ch_color_white, ch_icon_population, ch_color_end));
+				if (hud->item_hovered())
+					popup_str = std::format(L"Population Growth\nNeeded Surplus Food: {}\nStored Surplus Food: {:.1f}", owner_city->food_to_produce_population / 100, owner_city->surplus_food / 100.f);
 				auto sec = (owner_city->food_to_produce_population - owner_city->surplus_food) / (owner_city->food_production * 60);
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
-				hud->progress_bar(vec2(130.f, 24.f), (float)owner_city->surplus_food / (float)owner_city->food_to_produce_population,
+				hud->progress_bar(vec2(178.f, 24.f), (float)owner_city->surplus_food / (float)owner_city->food_to_produce_population,
 					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}{}{}{}    {:02d}:{:02d}", 
 						owner_city->surplus_food / 100.f, owner_city->food_to_produce_population / 100,
 						ch_color_white, ch_icon_food, ch_color_end,
@@ -1769,7 +1846,6 @@ bool Game::on_update()
 						ok = false;
 					if (!ok)
 						hud->push_enable(false);
-					hud->push_style_var(HudStyleVarBorder, 30.f * img_button_desc.border_uvs);
 					hud->push_style_color(HudStyleColorText, cvec4(255, 255, 255, 255));
 					hud->push_style_color(HudStyleColorTextDisabled, cvec4(180, 180, 180, 255));
 					if (hud->button(info.name, "construction"_h + (int)info.name.c_str()))
@@ -1778,7 +1854,6 @@ bool Game::on_update()
 						construction->construct_building = type;
 						construction->need_production = info.need_production;
 					}
-					hud->pop_style_var(HudStyleVarBorder);
 					hud->pop_style_color(HudStyleColorText);
 					hud->pop_style_color(HudStyleColorTextDisabled);
 					if (!ok)
@@ -1811,36 +1886,36 @@ bool Game::on_update()
 		hud->pop_style_color(HudStyleColorWindowBackground);
 		hud->pop_style_color(HudStyleColorText);
 
-		if (!popup_str.empty())
-		{
-			hud->push_style_image(HudStyleImageWindowBackground, img_frame_desc);
-			hud->push_style_var(HudStyleVarWindowBorder, 100.f * img_frame_desc.border_uvs);
-			hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
-			hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
-			hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
-			hud->begin_popup();
-			if (popup_img)
-			{
-				hud->begin_layout(HudHorizontal);
-				hud->image(vec2(64.f), popup_img->desc());
-				hud->text(popup_str);
-				hud->end_layout();
-			}
-			else
-				hud->text(popup_str);
-			hud->end();
-			hud->pop_style_image(HudStyleImageWindowBackground);
-			hud->pop_style_var(HudStyleVarWindowBorder);
-			hud->pop_style_color(HudStyleColorWindowFrame);
-			hud->pop_style_color(HudStyleColorWindowBackground);
-			hud->pop_style_color(HudStyleColorText);
-		}
-
 		tile_select->entity->set_enable(true);
 		tile_select->set_pos(selecting_tile->element->pos);
 	}
 	else
 		tile_select->entity->set_enable(false);
+
+	if (!popup_str.empty())
+	{
+		hud->push_style_image(HudStyleImageWindowBackground, img_frame_desc);
+		hud->push_style_var(HudStyleVarWindowBorder, 100.f * img_frame_desc.border_uvs);
+		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
+		hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
+		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+		hud->begin_popup();
+		if (popup_img)
+		{
+			hud->begin_layout(HudHorizontal);
+			hud->image(vec2(64.f), popup_img->desc());
+			hud->text(popup_str);
+			hud->end_layout();
+		}
+		else
+			hud->text(popup_str);
+		hud->end();
+		hud->pop_style_image(HudStyleImageWindowBackground);
+		hud->pop_style_var(HudStyleVarWindowBorder);
+		hud->pop_style_color(HudStyleColorWindowFrame);
+		hud->pop_style_color(HudStyleColorWindowBackground);
+		hud->pop_style_color(HudStyleColorText);
+	}
 
 	round_timer -= delta_time;
 	sig_round = false;
