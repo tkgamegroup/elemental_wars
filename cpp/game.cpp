@@ -151,23 +151,44 @@ BuildingInfo building_infos[BuildingTypeCount];
 
 std::vector<BuildingType> available_constructions = { BuildingSteamMachine, BuildingFireBarracks, BuildingWaterWheel, BuildingWaterBarracks, BuildingFarm, BuildingGrassBarracks };
 
-enum CharacterType
+enum UnitType
 {
-	CharacterFireElemental,
-	CharacterWaterElemental,
-	CharacterGrassElemental,
-
-	CharacterTypeCount
+	UnitFireElemental,
+	UnitWaterElemental,
+	UnitGrassElemental,
+	UnitTypeCount
 };
 
-struct CharacterInfo
+struct UnitInfo
 {
 	std::wstring name;
-	uint hp_max = 3000;
+	std::wstring description;
+	uint need_production = 15000;
+	uint hp_max = 1000;
 	ElementType element_type;
 	graphics::ImagePtr image = nullptr;
 };
-CharacterInfo character_infos[CharacterTypeCount];
+UnitInfo unit_infos[UnitTypeCount];
+
+enum ProductionType
+{
+	ProductionBuilding,
+	ProductionUnit
+};
+
+struct Production
+{
+	ProductionType type;
+	int item_id;
+	int need_value;
+	bool require_population = false;
+	bool repeat = false;
+	int value = 0;
+	int value_change = 0;
+	int value_avg = 0;
+	int value_one_sec_accumulate = 0;
+	std::function<void()> callback = nullptr;
+};
 
 struct cPlayer;
 struct cBuilding;
@@ -254,8 +275,14 @@ struct cBuilding : Component
 	bool dead = false;
 	int hp = 1;
 	int hp_max = 1;
+
+	std::vector<Production> productions;
+	std::vector<std::pair<uint, int>> ready_units;
+
 	bool building_enable = true;
 	bool working = false;
+	float work_time = 0.f;
+	float max_work_time = 1.f;
 	bool working_animating = false;
 	bool low_priority = false;
 
@@ -281,16 +308,12 @@ struct cBuilding : Component
 struct cConstruction : cBuilding
 {
 	BuildingType construct_building;
-	int need_production;
-	int production = 0;
-	int production_one_sec = 0;
-	int production_one_sec_accumulate = 0;
-	float one_sec_timer = 0.f;
 
 	cConstruction() { type_hash = "cConstruction"_h; }
 	virtual ~cConstruction() {}
 
 	void on_init() override;
+	void start() override;
 	void update() override;
 	void on_show_ui(sHudPtr hud) override;
 };
@@ -326,10 +349,10 @@ struct cCity : cBuilding
 		buildings->add_component<cElement>();
 		entity->add_child(buildings);
 
-		food_to_produce_population = calc_population_growth_needed_food();
+		food_to_produce_population = calc_population_growth_food();
 	}
 
-	int calc_population_growth_needed_food()
+	int calc_population_growth_food()
 	{
 		auto n = population - 1;
 		return (int(pow(n, 1.5f)) + 8 * n + 15) * 1000;
@@ -404,6 +427,7 @@ struct cFireBarracks : cBuilding
 	cFireBarracks() { type_hash = "cFireBarracks"_h; }
 	virtual ~cFireBarracks() {}
 
+	void start() override;
 	void update() override;
 };
 
@@ -412,6 +436,7 @@ struct cWaterBarracks : cBuilding
 	cWaterBarracks() { type_hash = "cWaterBarracks"_h; }
 	virtual ~cWaterBarracks() {}
 
+	void start() override;
 	void update() override;
 };
 
@@ -420,6 +445,7 @@ struct cGrassBarracks : cBuilding
 	cGrassBarracks() { type_hash = "cGrassBarracks"_h; }
 	virtual ~cGrassBarracks() {}
 
+	void start() override;
 	void update() override;
 };
 
@@ -456,7 +482,7 @@ struct cFarm : cBuilding
 	void on_show_ui(sHudPtr hud) override;
 };
 
-struct cCharacter : Component
+struct cUnit : Component
 {
 	cElementPtr element = nullptr;
 	cBody2dPtr body2d = nullptr;
@@ -478,15 +504,15 @@ struct cCharacter : Component
 	float find_timer = 0.f;
 	float shoot_timer = 0.f;
 
-	cCharacter() { type_hash = "cCharacter"_h; }
-	virtual ~cCharacter() {}
+	cUnit() { type_hash = "cUnit"_h; }
+	virtual ~cUnit() {}
 
 	void on_init() override;
 	void update() override;
 };
 
-uint character_id = 1;
-EntityPtr e_characters_root = nullptr;
+uint unit_id = 1;
+EntityPtr e_units_root = nullptr;
 
 struct cBullet : Component
 {
@@ -541,7 +567,7 @@ struct cPlayer : Component
 	}
 
 	cBuilding* add_building(cCity* city, BuildingType type, cTile* tile);
-	cCharacter* add_character(const vec2& pos, CharacterType type);
+	cUnit* add_unit(const vec2& pos, UnitType type);
 
 	void update_border_lines()
 	{
@@ -588,9 +614,11 @@ EntityPtr e_players_root = nullptr;
 const auto round_time = 30.f;
 float round_timer = round_time;
 bool sig_round = false;
-const auto turn_time = 1.f;
-float turn_timer = turn_time;
-bool sig_turn = false;
+
+float one_sec_timer = 1.f;
+bool sig_one_sec = false;
+
+bool mass_production = false;
 
 cPlayer* add_player(cTile* tile)
 {
@@ -640,21 +668,101 @@ void cBuilding::update()
 {
 	if (working)
 	{
+		work_time += delta_time;
+		if (work_time >= max_work_time)
+		{
+			work_time = 0.f;
+			low_priority = true;
+		}
+
 		if (!working_animating)
 		{
 			working_animating = true;
 			auto tween = sTween::instance();
 			auto id = tween->begin();
 			tween->set_target(id, e_content);
-			tween->scale_to(id, vec2(0.8f, 1.2f), 0.4f);
+			tween->scale_to(id, vec2(0.8f, 1.2f), 0.3f);
 			tween->set_ease(id, EaseOutBounce);
-			tween->scale_to(id, vec2(1.f), 0.3f);
+			tween->scale_to(id, vec2(1.f), 0.2f);
 			tween->set_ease(id, EaseOutElastic);
-			tween->wait(id, 0.3f);
+			tween->wait(id, 0.1f);
 			tween->set_callback(id, [this]() {
 				working_animating = false;
 			});
 			tween->end(id);
+		}
+	}
+	else
+		work_time = 0.f;
+
+	if (building_enable)
+	{
+		for (auto it = productions.begin(); it != productions.end();)
+		{
+			it->value_change = 0;
+
+			if (sig_one_sec)
+			{
+				it->value_avg = it->value_one_sec_accumulate;
+				it->value_one_sec_accumulate = 0;
+			}
+
+			if (it->require_population)
+			{
+				if (!city->apply_population())
+					continue;
+			}
+
+			auto v = city->apply_production(it->need_value - it->value);
+			if (v > 0)
+			{
+				it->value_change = v;
+				it->value += it->value_change;
+				it->value_one_sec_accumulate += v;
+				working = true;
+			}
+			else if (it->require_population)
+				city->population += 1;
+
+			if (it->value >= it->need_value)
+			{
+				if (it->callback)
+					it->callback();
+				else if (it->type == ProductionUnit)
+				{
+					auto added = false;
+					for (auto& ru : ready_units)
+					{
+						if (ru.first == it->item_id)
+						{
+							ru.second++;
+							added = true;
+							break;
+						}
+					}
+					if (!added)
+						ready_units.emplace_back(it->item_id, 1);
+				}
+				if (!it->repeat)
+					it = productions.erase(it);
+				else
+				{
+					it->value = 0;
+					it++;
+				}
+			}
+			else
+				it++;
+		}
+	}
+
+	if (sig_round)
+	{
+		auto pos = element->global_pos();
+		for (auto& u : ready_units)
+		{
+			for (auto i = 0; i < u.second; i++)
+				auto c = player->add_unit(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), (UnitType)u.first);
 		}
 	}
 }
@@ -664,62 +772,55 @@ void cConstruction::on_init()
 	cBuilding::on_init();
 
 	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
-		const auto len = 20.f;
-		auto r = ((float)production / (float)need_production);
-		draw_bar(ui_canvas, element->global_pos() - vec2(len * 0.5f, 10.f), r * len, 2, cvec4(255, 255, 127, 255));
+		if (!productions.empty())
+		{
+			auto& p = productions[0];
+			const auto len = 20.f;
+			auto r = ((float)p.value / (float)p.need_value);
+			draw_bar(ui_canvas, element->global_pos() - vec2(len * 0.5f, 10.f), r * len, 2, cvec4(255, 255, 127, 255));
+		}
 	});
+
+	max_work_time = 0.f;
+}
+
+void cConstruction::start()
+{
+	Production p;
+	p.type = ProductionBuilding;
+	p.item_id = construct_building;
+	p.need_value = building_infos[p.item_id].need_production;
+	p.callback = [this]() {
+		add_event([this]() {
+			player->add_building(construct_building == BuildingCity ? nullptr : city, construct_building, tile);
+			entity->remove_from_parent();
+			return false;
+		});
+
+		if (player == main_player)
+			sound_construction_end->play();
+	};
+	productions.push_back(p);
 }
 
 void cConstruction::update()
 {
 	cBuilding::update();
 
-	if (building_enable)
+	if (!productions.empty())
 	{
-		if (auto v = city->apply_production(need_production - production); v > 0)
+		auto& p = productions[0];
+		if (p.value_change > 0)
 		{
-			production += v;
-
-			production_one_sec_accumulate += v;
-
-			hp += v * hp_max / need_production;
+			hp += p.value_change * hp_max / p.need_value;
 			hp = min(hp, hp_max);
-
-			if (production >= need_production)
-			{
-				add_event([this]() {
-					player->add_building(construct_building == BuildingCity ? nullptr : city, construct_building, tile);
-					entity->remove_from_parent();
-					return false;
-				});
-
-				if (player == main_player)
-					sound_construction_end->play();
-			}
-
-			low_priority = true;
 		}
-	}
-
-	one_sec_timer += delta_time;
-	if (one_sec_timer >= 1.f)
-	{
-		production_one_sec = production_one_sec_accumulate;
-		production_one_sec_accumulate = 0;
-		one_sec_timer = 0.f;
 	}
 }
 
 void cConstruction::on_show_ui(sHudPtr hud)
 {
-	auto sec = production_one_sec > 0 ? (need_production - production) / production_one_sec : 0;
-	hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
-	hud->progress_bar(vec2(200.f, 24.f), (float)production / (float)need_production,
-		city->player->color, cvec4(127, 127, 127, 255), std::format(
-			L"{:.1f}/{}{}{}{}    {:02d}:{:02d}",
-			production / 100.f, need_production / 100, ch_color_white, ch_icon_production, ch_color_end,
-			sec / 60, sec % 60));
-	hud->pop_style_color(HudStyleColorText);
+
 }
 
 void cCity::update()
@@ -732,10 +833,12 @@ void cCity::update()
 	{
 		surplus_food = 0;
 		population += 1;
-		food_to_produce_population = calc_population_growth_needed_food();
+		food_to_produce_population = calc_population_growth_food();
 	}
 
 	production = production_next_turn;
+	if (mass_production && player == main_player)
+		production += 100;
 	food_production = food_production_next_turn;
 	production_next_turn = 0;
 	production_next_turn += 10; // from city
@@ -829,40 +932,55 @@ void cFarm::on_show_ui(sHudPtr hud)
 		hud->text(std::format(L"+{}{}{}{}", provide_food, ch_color_white, ch_icon_food, ch_color_end));
 }
 
+void cFireBarracks::start()
+{
+	Production p;
+	p.type = ProductionUnit;
+	p.item_id = UnitFireElemental;
+	p.need_value = unit_infos[p.item_id].need_production;
+	p.require_population = true;
+	p.repeat = true;
+	productions.push_back(p);
+}
+
 void cFireBarracks::update()
 {
 	cBuilding::update();
+}
 
-	if (sig_round)
-	{
-		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterFireElemental);
-	}
+void cWaterBarracks::start()
+{
+	Production p;
+	p.type = ProductionUnit;
+	p.item_id = UnitWaterElemental;
+	p.need_value = unit_infos[p.item_id].need_production;
+	p.require_population = true;
+	p.repeat = true;
+	productions.push_back(p);
 }
 
 void cWaterBarracks::update()
 {
 	cBuilding::update();
+}
 
-	if (sig_round)
-	{
-		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterWaterElemental);
-	}
+void cGrassBarracks::start()
+{
+	Production p;
+	p.type = ProductionUnit;
+	p.item_id = UnitGrassElemental;
+	p.need_value = unit_infos[p.item_id].need_production;
+	p.require_population = true;
+	p.repeat = true;
+	productions.push_back(p);
 }
 
 void cGrassBarracks::update()
 {
 	cBuilding::update();
-
-	if (sig_round)
-	{
-		auto pos = element->global_pos();
-		auto c = player->add_character(vec2(pos.x + linearRand(-5.f, +5.f), pos.y + linearRand(-5.f, +5.f)), CharacterGrassElemental);
-	}
 }
 
-void cCharacter::on_init()
+void cUnit::on_init()
 {
 	element->drawers.add([this](graphics::CanvasPtr ui_canvas) {
 		const auto len = 10.f;
@@ -871,7 +989,7 @@ void cCharacter::on_init()
 	});
 }
 
-void cCharacter::update()
+void cUnit::update()
 {
 	auto pos = element->pos;
 	auto dist_to_tar = distance(pos, target_pos);
@@ -884,7 +1002,7 @@ void cCharacter::update()
 
 		std::vector<std::pair<EntityPtr, float>> cands;
 		sScene::instance()->query_world2d(pos - vec2(tile_sz * 2.f), pos + vec2(tile_sz * 2.f), [&](EntityPtr e) {
-			auto character = e->get_component<cCharacter>();
+			auto character = e->get_component<cUnit>();
 			if (character && character->player != player)
 			{
 				auto dist = distance(character->element->pos, element->pos);
@@ -1030,7 +1148,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingCity:
 	{
 		auto b = new cCity;
@@ -1048,7 +1166,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingElementCollector:
 	{
 		auto b = new cElementCollector;
@@ -1057,7 +1175,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingFireBarracks:
 	{
 		auto b = new cFireBarracks;
@@ -1066,7 +1184,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingWaterBarracks:
 	{
 		auto b = new cWaterBarracks;
@@ -1075,7 +1193,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingGrassBarracks:
 	{
 		auto b = new cGrassBarracks;
@@ -1084,7 +1202,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingSteamMachine:
 	{
 		auto b = new cSteamMachine;
@@ -1093,7 +1211,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingWaterWheel:
 	{
 		auto b = new cWaterWheel;
@@ -1102,7 +1220,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	case BuildingFarm:
 	{
 		auto b = new cFarm;
@@ -1111,7 +1229,7 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 
 		building = b;
 	}
-	break;
+		break;
 	}
 	building->player = this;
 	building->city = city;
@@ -1124,9 +1242,9 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 	return building;
 }
 
-cCharacter* cPlayer::add_character(const vec2& pos, CharacterType type)
+cUnit* cPlayer::add_unit(const vec2& pos, UnitType type)
 {
-	auto& info = character_infos[type];
+	auto& info = unit_infos[type];
 	auto e = Entity::create();
 	auto element = e->add_component<cElement>();
 	element->pos = pos;
@@ -1141,17 +1259,17 @@ cCharacter* cPlayer::add_character(const vec2& pos, CharacterType type)
 	body2d->radius = element->ext.x * 0.5f;
 	body2d->friction = 0.3f;
 	body2d->collide_bit = 1 << id;
-	auto c = new cCharacter;
+	auto c = new cUnit;
 	c->element = element;
 	c->body2d = body2d;
 	c->player = this;
-	c->id = character_id++;
+	c->id = unit_id++;
 	c->color = color;
 	c->element_type = info.element_type;
 	c->hp_max = info.hp_max;
 	c->hp = info.hp_max;
 	e->add_component_p(c);
-	e_characters_root->add_child(e);
+	e_units_root->add_child(e);
 	return c;
 }
 
@@ -1161,15 +1279,15 @@ float select_tile_time = 0.f;
 
 void on_contact(EntityPtr a, EntityPtr b)
 {
-	cCharacter* character = nullptr;
+	cUnit* character = nullptr;
 	cBuilding* building = nullptr;
 	cBullet* bullet = nullptr;
-	character = a->get_component<cCharacter>();
+	character = a->get_component<cUnit>();
 	building = a->get_base_component<cBuilding>();
 	bullet = b->get_component<cBullet>();
 	if ((!character && !building) || !bullet)
 	{
-		character = b->get_component<cCharacter>();
+		character = b->get_component<cUnit>();
 		building = b->get_base_component<cBuilding>();
 		bullet = a->get_component<cBullet>();
 	}
@@ -1289,7 +1407,7 @@ void Game::init()
 	hud->push_style_sound(HudStyleSoundButtonHover, sound_hover);
 	hud->push_style_sound(HudStyleSoundButtonClicked, sound_clicked);
 
-	hud->push_style_var(HudStyleVarButtonBorder, 30.f * img_button_desc.border_uvs);
+	hud->push_style_var(HudStyleVarButtonBorder, img_button_desc.border_uvs * vec2(img_button->extent).xyxy() * 0.3f);
 	hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
 	hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
 	hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
@@ -1382,17 +1500,17 @@ void Game::init()
 		.image = graphics::Image::get(L"assets/farm.png")
 	};
 
-	character_infos[CharacterFireElemental] = {
+	unit_infos[UnitFireElemental] = {
 		.name = L"Fire Elemental",
 		.element_type = ElementFire,
 		.image = graphics::Image::get(L"assets/fire_elemental.png")
 	};
-	character_infos[CharacterWaterElemental] = {
+	unit_infos[UnitWaterElemental] = {
 		.name = L"Water Elemental",
 		.element_type = ElementWater,
 		.image = graphics::Image::get(L"assets/water_elemental.png")
 	};
-	character_infos[CharacterGrassElemental] = {
+	unit_infos[UnitGrassElemental] = {
 		.name = L"Grass Elemental",
 		.element_type = ElementGrass,
 		.image = graphics::Image::get(L"assets/grass_elemental.png")
@@ -1578,9 +1696,9 @@ void Game::init()
 		}
 	}
 
-	e_characters_root = Entity::create();
-	e_characters_root->add_component<cElement>();
-	e_element_root->add_child(e_characters_root);
+	e_units_root = Entity::create();
+	e_units_root->add_component<cElement>();
+	e_element_root->add_child(e_units_root);
 
 	e_bullets_root = Entity::create();
 	e_bullets_root->add_component<cElement>();
@@ -1621,7 +1739,6 @@ bool Game::on_update()
 								auto type = random_item(cands);
 								auto construction = (cConstruction*)player->add_building(city, BuildingConstruction, tile);
 								construction->construct_building = type;
-								construction->need_production = building_infos[type].need_production;
 								break;
 							}
 						}
@@ -1659,9 +1776,13 @@ bool Game::on_update()
 	std::wstring popup_str = L"";
 	graphics::ImagePtr popup_img = nullptr;
 
+	hud->begin("cheat"_h, vec2(0.f, 40.f), vec2(0.f));
+	hud->checkbox(&mass_production, L"Mass Production");
+	hud->end();
+
 	hud->push_style_color(HudStyleColorWindowBackground, cvec4(0, 0, 0, 0));
 	hud->push_style_var(HudStyleVarWindowFrame, vec4(0.f));
-	hud->begin("tips"_h, vec2(screen_size.x, screen_size.y - 200.f), vec2(0.f), vec2(1.f));
+	hud->begin("tips"_h, vec2(screen_size.x, screen_size.y - 220.f), vec2(0.f), vec2(1.f));
 	for (auto& c : main_player->cities->children)
 	{
 		auto city = c->get_component<cCity>();
@@ -1683,7 +1804,7 @@ bool Game::on_update()
 	if (selecting_tile)
 	{
 		hud->push_style_image(HudStyleImageWindowBackground, img_frame2_desc);
-		hud->push_style_var(HudStyleVarWindowBorder, 150.f * img_frame2_desc.border_uvs);
+		hud->push_style_var(HudStyleVarWindowBorder, img_frame2_desc.border_uvs * vec2(img_frame2->extent).xyxy() * 0.5f);
 		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
 		hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
 		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
@@ -1785,7 +1906,6 @@ bool Game::on_update()
 						{
 							auto construction = (cConstruction*)main_player->add_building(owner_city, BuildingConstruction, tile);
 							construction->construct_building = BuildingCity;
-							construction->need_production = building_infos[BuildingCity].need_production;
 						}
 					});
 				}
@@ -1796,7 +1916,8 @@ bool Game::on_update()
 			else
 			{
 				hud->push_style_color(HudStyleColorText, building->player->color);
-				hud->text(info.name);
+				hud->text(building->type == BuildingConstruction ? 
+					std::format(L"Construction: {}", building_infos[((cConstruction*)building)->construct_building].name) : info.name);
 				hud->pop_style_color(HudStyleColorText);
 
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
@@ -1808,6 +1929,7 @@ bool Game::on_update()
 				{
 					hud->begin_layout(HudHorizontal);
 					hud->text(building->working ? L"Working" : L"Idle");
+					hud->push_style_image(HudStyleImageButton, {}, 4);
 					if (building->building_enable)
 					{
 						if (hud->button(L"Disable"))
@@ -1818,8 +1940,68 @@ bool Game::on_update()
 						if (hud->button(L"Enable"))
 							building->set_building_enable(true);
 					}
+					hud->pop_style_image(HudStyleImageButton, 4);
 					hud->end_layout();
 					building->on_show_ui(hud);
+					for (auto& p : building->productions)
+					{
+						graphics::ImagePtr icon = nullptr;
+						switch (p.type)
+						{
+						case ProductionBuilding: icon = building_infos[p.item_id].image; break;
+						case ProductionUnit: icon = unit_infos[p.item_id].image;  break;
+						}
+						hud->begin_layout(HudHorizontal);
+						hud->image(vec2(32.f), icon->desc());
+						if (hud->item_hovered())
+						{
+							popup_img = icon;
+							switch (p.type)
+							{
+							case ProductionBuilding:
+							{
+								auto& info = building_infos[p.item_id];
+								popup_str = std::format(
+									L"{}{}{}\n"
+									L"{}{}{}",
+									ch_size_big, info.name, ch_size_end,
+									ch_size_medium, info.description, ch_size_end);
+							}
+								break;
+							case ProductionUnit:
+							{
+								auto& info = unit_infos[p.item_id];
+								popup_str = std::format(
+									L"{}{}{}\n"
+									L"{}{}{}",
+									ch_size_big, info.name, ch_size_end,
+									ch_size_medium, info.description, ch_size_end);
+							}
+								break;
+							}
+						}
+						auto sec = p.value_avg > 0 ? (p.need_value - p.value) / p.value_avg : 0;
+						hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+						hud->progress_bar(vec2(200.f, 24.f), (float)p.value / (float)p.need_value,
+							owner_city->player->color, cvec4(127, 127, 127, 255), std::format(
+								L"{:.1f}/{}{}{}{}    {:02d}:{:02d}",
+								p.value / 100.f, p.need_value / 100, ch_color_white, ch_icon_production, ch_color_end,
+								sec / 60, sec % 60));
+						hud->pop_style_color(HudStyleColorText);
+						hud->end_layout();
+					}
+					if (!building->ready_units.empty())
+					{
+						hud->text(L"Ready Units");
+						for (auto& ru : building->ready_units)
+						{
+							hud->begin_layout(HudHorizontal);
+							auto& info = unit_infos[ru.first];
+							hud->image(vec2(32.f), info.image->desc());
+							hud->text(std::format(L" x{}", ru.second));
+							hud->end_layout();
+						}
+					}
 				}
 			}
 		}
@@ -1852,7 +2034,6 @@ bool Game::on_update()
 					{
 						auto construction = (cConstruction*)main_player->add_building(owner_city, BuildingConstruction, selecting_tile);
 						construction->construct_building = type;
-						construction->need_production = info.need_production;
 					}
 					hud->pop_style_color(HudStyleColorText);
 					hud->pop_style_color(HudStyleColorTextDisabled);
@@ -1895,7 +2076,7 @@ bool Game::on_update()
 	if (!popup_str.empty())
 	{
 		hud->push_style_image(HudStyleImageWindowBackground, img_frame_desc);
-		hud->push_style_var(HudStyleVarWindowBorder, 100.f * img_frame_desc.border_uvs);
+		hud->push_style_var(HudStyleVarWindowBorder, img_frame_desc.border_uvs * vec2(img_frame->extent).xyxy() * 0.5f);
 		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
 		hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
 		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
@@ -1925,20 +2106,20 @@ bool Game::on_update()
 		round_timer = round_time;
 	}
 
-	turn_timer -= delta_time;
-	sig_turn = false;
-	if (turn_timer <= 0.f)
+	one_sec_timer -= delta_time;
+	sig_one_sec = false;
+	if (one_sec_timer <= 0.f)
 	{
-		sig_turn = true;
-		turn_timer = turn_time;
+		sig_one_sec = true;
+		one_sec_timer = 1.f;
 	}
 
 	{
-		auto n = e_characters_root->children.size();
+		auto n = e_units_root->children.size();
 		for (auto i = 0; i < n; i++)
 		{
-			auto e = e_characters_root->children[i].get();
-			auto c = e->get_component<cCharacter>();
+			auto e = e_units_root->children[i].get();
+			auto c = e->get_component<cUnit>();
 			if (c->dead)
 			{
 				e->remove_from_parent();
