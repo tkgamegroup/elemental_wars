@@ -21,6 +21,7 @@ struct Game : UniverseApplication
 
 	void init();
 	bool on_update() override;
+	void on_hud() override;
 };
 
 const auto tile_cx = 60U;
@@ -189,6 +190,53 @@ struct Production
 	int value_one_sec_accumulate = 0;
 	std::function<void()> callback = nullptr;
 };
+
+struct Technology
+{
+	Technology* parent = nullptr;
+	std::vector<Technology*> children;
+
+	std::wstring name;
+	std::wstring description;
+	graphics::ImagePtr image = nullptr;
+	bool completed = false;
+	int need_value;
+	int value = 0;
+	int value_change = 0;
+	int value_avg = 0;
+	int value_one_sec_accumulate = 0;
+
+	void attach(Technology* _parent)
+	{
+		parent = _parent;
+		parent->children.push_back(this);
+	}
+};
+
+Technology* tech_tree = nullptr;
+Technology* tech_large_scale_planting = nullptr;
+
+void init_tech_tree()
+{
+	tech_tree = new Technology;
+	tech_large_scale_planting = new Technology;
+	tech_large_scale_planting->name = L"Large scale planting";
+	tech_large_scale_planting->description = L"Farm +1 Food for every adjacent Farm";
+	tech_large_scale_planting->need_value = 6000;
+	tech_large_scale_planting->attach(tech_tree);
+}
+
+void show_tech_ui(sHudPtr hud, Technology* tech)
+{
+	if (tech != tech_tree)
+	{
+		hud->rect(vec2(32.f), cvec4(255));
+	}
+	hud->begin_layout(HudHorizontal);
+	for (auto c : tech->children)
+		show_tech_ui(hud, c);
+	hud->end_layout();
+}
 
 struct cPlayer;
 struct cBuilding;
@@ -550,6 +598,7 @@ struct cPlayer : Component
 	uint fire_element = 0;
 	uint water_element = 0;
 	uint grass_element = 0;
+	int science = 0;
 
 	EntityPtr cities = nullptr;
 
@@ -1407,15 +1456,15 @@ void Game::init()
 	hud->push_style_sound(HudStyleSoundButtonHover, sound_hover);
 	hud->push_style_sound(HudStyleSoundButtonClicked, sound_clicked);
 
-	hud->push_style_var(HudStyleVarButtonBorder, img_button_desc.border_uvs * vec2(img_button->extent).xyxy() * 0.3f);
-	hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
-	hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
-	hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
-	hud->push_style_color(HudStyleColorButtonDisabled, cvec4(255, 255, 255, 255));
-	hud->push_style_image(HudStyleImageButton, img_button_desc);
-	hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
-	hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
-	hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
+	//hud->push_style_var(HudStyleVarButtonBorder, img_button_desc.border_uvs * vec2(img_button->extent).xyxy() * 0.3f);
+	//hud->push_style_color(HudStyleColorButton, cvec4(255, 255, 255, 255));
+	//hud->push_style_color(HudStyleColorButtonHovered, cvec4(200, 200, 200, 255));
+	//hud->push_style_color(HudStyleColorButtonActive, cvec4(220, 220, 220, 255));
+	//hud->push_style_color(HudStyleColorButtonDisabled, cvec4(255, 255, 255, 255));
+	//hud->push_style_image(HudStyleImageButton, img_button_desc);
+	//hud->push_style_image(HudStyleImageButtonHovered, img_button_desc);
+	//hud->push_style_image(HudStyleImageButtonActive, img_button_desc);
+	//hud->push_style_image(HudStyleImageButtonDisabled, img_button_desc);
 
 	sound_hover = load_sound_effect(L"assets/hover.wav", 0.15f);
 	sound_clicked = load_sound_effect(L"assets/clicked.wav", 0.35f);
@@ -1515,6 +1564,8 @@ void Game::init()
 		.element_type = ElementGrass,
 		.image = graphics::Image::get(L"assets/grass_elemental.png")
 	};
+
+	init_tech_tree();
 
 	auto root = world->root.get();
 
@@ -1712,8 +1763,6 @@ void Game::init()
 
 bool Game::on_update()
 {
-	UniverseApplication::on_update();
-	
 	for (auto& p : e_players_root->children)
 	{
 		auto player = p->get_component<cPlayer>();
@@ -1731,7 +1780,7 @@ bool Game::on_update()
 							std::vector<BuildingType> cands;
 							for (auto t : available_constructions)
 							{
-								if (auto et = building_infos[t].require_tile_type; et != ElementNone || et == tile->element_type)
+								if (auto et = building_infos[t].require_tile_type; et == ElementNone || et == tile->element_type)
 									cands.push_back(t);
 							}
 							if (!cands.empty())
@@ -1748,23 +1797,6 @@ bool Game::on_update()
 		}
 	}
 
-	auto screen_size = ui_canvas->size;
-
-	hud->begin("top"_h, vec2(0.f, 0.f), vec2(screen_size.x, 24.f), cvec4(0, 0, 0, 255));
-	hud->begin_layout(HudHorizontal);
-	hud->rect(vec2(16.f), cvec4(255, 127, 127, 255));
-	hud->text(std::format(L"{}", main_player->fire_element));
-	hud->rect(vec2(16.f), cvec4(127, 127, 255, 255));
-	hud->text(std::format(L"{}", main_player->water_element));
-	hud->rect(vec2(16.f), cvec4(127, 255, 127, 255));
-	hud->text(std::format(L"{}", main_player->grass_element));
-	hud->end_layout();
-	hud->end();
-
-	hud->begin("round"_h, vec2(screen_size.x * 0.5f, 0.f), vec2(0.f), vec2(0.5f, 0.f));
-	hud->text(std::format(L"{}", (int)round_timer));
-	hud->end();
-
 	if (hovering_tile)
 	{
 		tile_hover->entity->set_enable(true);
@@ -1773,10 +1805,149 @@ bool Game::on_update()
 	else
 		tile_hover->entity->set_enable(false);
 
+	UniverseApplication::on_update();
+
+	round_timer -= delta_time;
+	sig_round = false;
+	if (round_timer <= 0.f)
+	{
+		sig_round = true;
+		round_timer = round_time;
+	}
+
+	one_sec_timer -= delta_time;
+	sig_one_sec = false;
+	if (one_sec_timer <= 0.f)
+	{
+		sig_one_sec = true;
+		one_sec_timer = 1.f;
+	}
+
+	{
+		auto n = e_units_root->children.size();
+		for (auto i = 0; i < n; i++)
+		{
+			auto e = e_units_root->children[i].get();
+			auto c = e->get_component<cUnit>();
+			if (c->dead)
+			{
+				e->remove_from_parent();
+				i--;
+				n--;
+			}
+		}
+	}
+	{
+		auto n = e_bullets_root->children.size();
+		for (auto i = 0; i < n; i++)
+		{
+			auto e = e_bullets_root->children[i].get();
+			auto b = e->get_component<cBullet>();
+			if (b->dead)
+			{
+				e->remove_from_parent();
+				i--;
+				n--;
+			}
+		}
+	}
+	{
+		for (auto& p : e_players_root->children)
+		{
+			auto player = p->get_component<cPlayer>();
+			for (auto& c : player->cities->children)
+			{
+				auto city = c->get_component<cCity>();
+				auto& buildings = city->buildings->children;
+				auto n = buildings.size();
+				for (auto i = 0; i < n; i++)
+				{
+					auto b = buildings[i]->get_base_component<cBuilding>();
+					if (b->low_priority)
+					{
+						std::rotate(buildings.begin() + i, buildings.begin() + i + 1, buildings.end());
+						b->low_priority = false;
+						i--;
+					}
+				}
+				for (auto i = 0; i < n; i++)
+				{
+					auto e = buildings[i].get();
+					auto b = e->get_base_component<cBuilding>();
+					if (b->dead)
+					{
+						b->tile->building = nullptr;
+						e->remove_from_parent();
+						i--;
+						n--;
+					}
+				}
+			}
+		}
+	}
+
+	if (input->mbtn[Mouse_Middle])
+		camera->element->add_pos(-input->mdisp);
+
+	if (input->mbtn[Mouse_Right])
+	{
+		if (selecting_tile)
+			selecting_tile = nullptr;
+		if (select_tile_callback)
+			end_select_tile(nullptr);
+	}
+
+	if (input->mscroll != 0)
+	{
+		static float scales[] = { 1.f, 1.2f, 1.4f, 1.6f, 1.8f, 2.f, 2.5f, 3.f, 3.5f, 4.f, 4.5f, 5.f };
+		auto scl = camera->element->scl.x;
+		if (input->mscroll > 0)
+		{
+			auto it = std::find(scales, scales + count_of(scales), scl);
+			if (it + 1 != scales + count_of(scales))
+				camera->element->set_scl(vec2(*(it + 1)));
+		}
+		if (input->mscroll < 0)
+		{
+			auto it = std::find(scales, scales + count_of(scales), scl);
+			if (it != scales)
+				camera->element->set_scl(vec2(*(it - 1)));
+		}
+	}
+
+	return true;
+}
+
+void Game::on_hud()
+{
+	auto screen_size = ui_canvas->size;
+
+	hud->begin("top"_h, vec2(0.f, 0.f), vec2(screen_size.x, 28.f), cvec4(0, 0, 0, 255));
+	hud->begin_layout(HudHorizontal);
+	//hud->rect(vec2(16.f), cvec4(255, 127, 127, 255));
+	//hud->text(std::format(L"{}", main_player->fire_element));
+	//hud->rect(vec2(16.f), cvec4(127, 127, 255, 255));
+	//hud->text(std::format(L"{}", main_player->water_element));
+	//hud->rect(vec2(16.f), cvec4(127, 255, 127, 255));
+	//hud->text(std::format(L"{}", main_player->grass_element));
+	hud->text(std::format(L"Science: {}", main_player->science));
+	hud->end_layout();
+	hud->end();
+
+	hud->begin("books"_h, vec2(0.f, 32), vec2(0.f));
+	static bool show_tech_tree = false;
+	if (hud->button(L"Tech Tree"))
+		show_tech_tree = !show_tech_tree;
+	hud->end();
+
+	hud->begin("round"_h, vec2(screen_size.x * 0.5f, 0.f), vec2(0.f), vec2(0.5f, 0.f));
+	hud->text(std::format(L"{}", (int)round_timer));
+	hud->end();
+
 	std::wstring popup_str = L"";
 	graphics::ImagePtr popup_img = nullptr;
 
-	hud->begin("cheat"_h, vec2(0.f, 40.f), vec2(0.f));
+	hud->begin("cheat"_h, vec2(0.f, screen_size.y), vec2(0.f), vec2(0.f, 1.f));
 	hud->checkbox(&mass_production, L"Mass Production");
 	hud->end();
 
@@ -1803,11 +1974,11 @@ bool Game::on_update()
 
 	if (selecting_tile)
 	{
-		hud->push_style_image(HudStyleImageWindowBackground, img_frame2_desc);
-		hud->push_style_var(HudStyleVarWindowBorder, img_frame2_desc.border_uvs * vec2(img_frame2->extent).xyxy() * 0.5f);
-		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
-		hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
-		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+		//hud->push_style_image(HudStyleImageWindowBackground, img_frame2_desc);
+		//hud->push_style_var(HudStyleVarWindowBorder, img_frame2_desc.border_uvs * vec2(img_frame2->extent).xyxy() * 0.5f);
+		//hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
+		//hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
+		//hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 		hud->begin("selecting_tile"_h, vec2(screen_size), vec2(0.f), vec2(min(0.2f, total_time - select_tile_time) * 5.f, 1.f));
 
 		auto owner_city = selecting_tile->owner_city;
@@ -2061,11 +2232,11 @@ bool Game::on_update()
 		}
 
 		hud->end();
-		hud->pop_style_image(HudStyleImageWindowBackground);
-		hud->pop_style_var(HudStyleVarWindowBorder);
-		hud->pop_style_color(HudStyleColorWindowFrame);
-		hud->pop_style_color(HudStyleColorWindowBackground);
-		hud->pop_style_color(HudStyleColorText);
+		//hud->pop_style_image(HudStyleImageWindowBackground);
+		//hud->pop_style_var(HudStyleVarWindowBorder);
+		//hud->pop_style_color(HudStyleColorWindowFrame);
+		//hud->pop_style_color(HudStyleColorWindowBackground);
+		//hud->pop_style_color(HudStyleColorText);
 
 		tile_select->entity->set_enable(true);
 		tile_select->set_pos(selecting_tile->element->pos);
@@ -2073,13 +2244,27 @@ bool Game::on_update()
 	else
 		tile_select->entity->set_enable(false);
 
+	if (show_tech_tree)
+	{
+		hud->begin("tech_tree"_h, vec2(20.f, 75.f), vec2(1240.f, 600.f));
+		hud->begin_layout(HudVertical, vec2(1236.f, 560.f));
+		show_tech_ui(hud, tech_tree);
+		hud->end_layout();
+		hud->begin_layout(HudHorizontal);
+		hud->rect(vec2(1160.f, 8.f), cvec4(0));
+		if (hud->button(L"Close"))
+			show_tech_tree = false;
+		hud->end();
+		hud->end();
+	}
+
 	if (!popup_str.empty())
 	{
-		hud->push_style_image(HudStyleImageWindowBackground, img_frame_desc);
-		hud->push_style_var(HudStyleVarWindowBorder, img_frame_desc.border_uvs * vec2(img_frame->extent).xyxy() * 0.5f);
-		hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
-		hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
-		hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
+		//hud->push_style_image(HudStyleImageWindowBackground, img_frame_desc);
+		//hud->push_style_var(HudStyleVarWindowBorder, img_frame_desc.border_uvs * vec2(img_frame->extent).xyxy() * 0.5f);
+		//hud->push_style_color(HudStyleColorWindowFrame, cvec4(0, 0, 0, 0));
+		//hud->push_style_color(HudStyleColorWindowBackground, cvec4(255, 255, 255, 255));
+		//hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 		hud->begin_popup();
 		if (popup_img)
 		{
@@ -2091,122 +2276,12 @@ bool Game::on_update()
 		else
 			hud->text(popup_str);
 		hud->end();
-		hud->pop_style_image(HudStyleImageWindowBackground);
-		hud->pop_style_var(HudStyleVarWindowBorder);
-		hud->pop_style_color(HudStyleColorWindowFrame);
-		hud->pop_style_color(HudStyleColorWindowBackground);
-		hud->pop_style_color(HudStyleColorText);
+		//hud->pop_style_image(HudStyleImageWindowBackground);
+		//hud->pop_style_var(HudStyleVarWindowBorder);
+		//hud->pop_style_color(HudStyleColorWindowFrame);
+		//hud->pop_style_color(HudStyleColorWindowBackground);
+		//hud->pop_style_color(HudStyleColorText);
 	}
-
-	round_timer -= delta_time;
-	sig_round = false;
-	if (round_timer <= 0.f)
-	{
-		sig_round = true;
-		round_timer = round_time;
-	}
-
-	one_sec_timer -= delta_time;
-	sig_one_sec = false;
-	if (one_sec_timer <= 0.f)
-	{
-		sig_one_sec = true;
-		one_sec_timer = 1.f;
-	}
-
-	{
-		auto n = e_units_root->children.size();
-		for (auto i = 0; i < n; i++)
-		{
-			auto e = e_units_root->children[i].get();
-			auto c = e->get_component<cUnit>();
-			if (c->dead)
-			{
-				e->remove_from_parent();
-				i--;
-				n--;
-			}
-		}
-	}
-	{
-		auto n = e_bullets_root->children.size();
-		for (auto i = 0; i < n; i++)
-		{
-			auto e = e_bullets_root->children[i].get();
-			auto b = e->get_component<cBullet>();
-			if (b->dead)
-			{
-				e->remove_from_parent();
-				i--;
-				n--;
-			}
-		}
-	}
-	{
-		for (auto& p : e_players_root->children)
-		{
-			auto player = p->get_component<cPlayer>();
-			for (auto& c : player->cities->children)
-			{
-				auto city = c->get_component<cCity>();
-				auto& buildings = city->buildings->children;
-				auto n = buildings.size();
-				for (auto i = 0; i < n; i++)
-				{
-					auto b = buildings[i]->get_base_component<cBuilding>();
-					if (b->low_priority)
-					{
-						std::rotate(buildings.begin() + i, buildings.begin() + i + 1, buildings.end());
-						b->low_priority = false;
-						i--;
-					}
-				}
-				for (auto i = 0; i < n; i++)
-				{
-					auto e = buildings[i].get();
-					auto b = e->get_base_component<cBuilding>();
-					if (b->dead)
-					{
-						b->tile->building = nullptr;
-						e->remove_from_parent();
-						i--;
-						n--;
-					}
-				}
-			}
-		}
-	}
-
-	if (input->mbtn[Mouse_Middle])
-		camera->element->add_pos(-input->mdisp);
-
-	if (input->mbtn[Mouse_Right])
-	{
-		if (selecting_tile)
-			selecting_tile = nullptr;
-		if (select_tile_callback)
-			end_select_tile(nullptr);
-	}
-
-	if (input->mscroll != 0)
-	{
-		static float scales[] = { 1.f, 1.2f, 1.4f, 1.6f, 1.8f, 2.f, 2.5f, 3.f, 3.5f, 4.f, 4.5f, 5.f };
-		auto scl = camera->element->scl.x;
-		if (input->mscroll > 0)
-		{
-			auto it = std::find(scales, scales + count_of(scales), scl);
-			if (it + 1 != scales + count_of(scales))
-				camera->element->set_scl(vec2(*(it + 1)));
-		}
-		if (input->mscroll < 0)
-		{
-			auto it = std::find(scales, scales + count_of(scales), scl);
-			if (it != scales)
-				camera->element->set_scl(vec2(*(it - 1)));
-		}
-	}
-
-	return true;
 }
 
 Game game;
