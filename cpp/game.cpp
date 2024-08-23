@@ -45,6 +45,7 @@ graphics::ImageDesc img_button_desc;
 graphics::ImagePtr img_food = nullptr;
 graphics::ImagePtr img_population = nullptr;
 graphics::ImagePtr img_production = nullptr;
+graphics::ImagePtr img_science = nullptr;
 graphics::ImageAtlasPtr atlas_tiles = nullptr;
 graphics::ImageDesc img_fire_tile = {};
 graphics::ImageDesc img_water_tile = {};
@@ -120,6 +121,7 @@ const wchar_t ch_icon_tile = graphics::CH_ICON_BEGIN + 0;
 const wchar_t ch_icon_food = graphics::CH_ICON_BEGIN + 1;
 const wchar_t ch_icon_population = graphics::CH_ICON_BEGIN + 2;
 const wchar_t ch_icon_production = graphics::CH_ICON_BEGIN + 3;
+const wchar_t ch_icon_science = graphics::CH_ICON_BEGIN + 4;
 
 enum BuildingType
 {
@@ -171,6 +173,18 @@ struct UnitInfo
 };
 UnitInfo unit_infos[UnitTypeCount];
 
+const auto round_time = 30.f;
+float round_timer = round_time;
+bool sig_round = false;
+
+float one_sec_timer = 1.f;
+bool sig_one_sec = false;
+
+float one_third_sec_timer = 0.33f;
+bool sig_one_third_sec = false;
+
+bool mass_production = false;
+
 enum ProductionType
 {
 	ProductionBuilding,
@@ -200,6 +214,7 @@ struct Technology
 	std::wstring description;
 	graphics::ImagePtr image = nullptr;
 	bool completed = false;
+	bool researching = false;
 	int need_value;
 	int value = 0;
 	int value_change = 0;
@@ -211,32 +226,27 @@ struct Technology
 		parent = _parent;
 		parent->children.push_back(this);
 	}
-};
 
-Technology* tech_tree = nullptr;
-Technology* tech_large_scale_planting = nullptr;
-
-void init_tech_tree()
-{
-	tech_tree = new Technology;
-	tech_large_scale_planting = new Technology;
-	tech_large_scale_planting->name = L"Large scale planting";
-	tech_large_scale_planting->description = L"Farm +1 Food for every adjacent Farm";
-	tech_large_scale_planting->need_value = 6000;
-	tech_large_scale_planting->attach(tech_tree);
-}
-
-void show_tech_ui(sHudPtr hud, Technology* tech)
-{
-	if (tech != tech_tree)
+	void start_researching()
 	{
-		hud->rect(vec2(32.f), cvec4(255));
+		if (!completed)
+			researching = true;
+
+		value_change = 0;
+		value_avg = 0;
+		value_one_sec_accumulate = 0;
+
+		if (parent)
+			parent->start_researching();
 	}
-	hud->begin_layout(HudHorizontal);
-	for (auto c : tech->children)
-		show_tech_ui(hud, c);
-	hud->end_layout();
-}
+
+	void stop_researching()
+	{
+		researching = false;
+		for (auto c : children)
+			c->stop_researching();
+	}
+};
 
 struct cPlayer;
 struct cBuilding;
@@ -265,6 +275,24 @@ struct cTile : Component
 	virtual ~cTile() {}
 
 	void on_init() override;
+
+	std::vector<cTile*> get_adjacent()
+	{
+		std::vector<cTile*> ret;
+		if (tile_lt)
+			ret.push_back(tile_lt);
+		if (tile_t)
+			ret.push_back(tile_t);
+		if (tile_rt)
+			ret.push_back(tile_rt);
+		if (tile_lb)
+			ret.push_back(tile_lb);
+		if (tile_b)
+			ret.push_back(tile_b);
+		if (tile_rb)
+			ret.push_back(tile_rb);
+		return ret;
+	}
 };
 
 std::vector<cTile*> get_nearby_tiles(cTile* tile, uint level = 1)
@@ -287,18 +315,8 @@ std::vector<cTile*> get_nearby_tiles(cTile* tile, uint level = 1)
 		for (auto i = start_idx; i != end_idx; i++)
 		{
 			auto t = i == -1 ? tile : ret[i];
-			if (t->tile_lt)
-				add_tile(t->tile_lt);
-			if (t->tile_t)
-				add_tile(t->tile_t);
-			if (t->tile_rt)
-				add_tile(t->tile_rt);
-			if (t->tile_lb)
-				add_tile(t->tile_lb);
-			if (t->tile_b)
-				add_tile(t->tile_b);
-			if (t->tile_rb)
-				add_tile(t->tile_rb);
+			for (auto aj : t->get_adjacent())
+				add_tile(aj);
 		}
 		start_idx = end_idx;
 		end_idx = ret.size();
@@ -439,8 +457,6 @@ struct cCity : cBuilding
 
 	void add_territory(cTile* tile)
 	{
-		if (!tile)
-			return;
 		if (!has_territory(tile))
 		{
 			territories.push_back(tile);
@@ -530,6 +546,20 @@ struct cFarm : cBuilding
 	void on_show_ui(sHudPtr hud) override;
 };
 
+enum StatusType
+{
+	StatusIgnited,
+	StatusPoisoned,
+	StatusCount
+};
+
+struct Status
+{
+	float value = 0.f;
+	float resistance = 100.f;
+	float duration = 0.f;
+};
+
 struct cUnit : Component
 {
 	cElementPtr element = nullptr;
@@ -543,6 +573,7 @@ struct cUnit : Component
 	ElementType element_type;
 	int hp = 10;
 	int hp_max = 10;
+	Status statuses[StatusCount];
 
 	float attack_interval = 1.f;
 	float attack_range = 50.f;
@@ -557,6 +588,31 @@ struct cUnit : Component
 
 	void on_init() override;
 	void update() override;
+
+	void take_damage(ElementType type, int value)
+	{
+		hp -= value * element_effectiveness[type][element_type];
+		if (hp <= 0)
+			dead = true;
+	}
+
+	void take_status_value(StatusType type, float v)
+	{
+		auto& s = statuses[type];
+		if (s.duration == 0.f)
+		{
+			s.value += v;
+			if (s.value >= s.resistance)
+			{
+				s.value = 0.f;
+				switch (type)
+				{
+				case StatusIgnited: s.duration = 6.f; break;
+				case StatusPoisoned: s.duration = 10.f; break;
+				}
+			}
+		}
+	}
 };
 
 uint unit_id = 1;
@@ -573,8 +629,9 @@ struct cBullet : Component
 	bool dead = false;
 	float ttl = 2.f;
 	ElementType element_type;
+	float status_values[StatusCount] = { 0.f };
 
-	vec2 vel;
+	vec2 velocity;
 
 	cBullet() { type_hash = "cBullet"_h; }
 	virtual ~cBullet() {}
@@ -595,10 +652,13 @@ struct cPlayer : Component
 	cvec4 color;
 	bool ai = false;
 
-	uint fire_element = 0;
-	uint water_element = 0;
-	uint grass_element = 0;
+	Technology* tech_tree = nullptr;
+	Technology* tech_large_scale_planting = nullptr;
+	Technology* tech_gear_set = nullptr;
+	Technology* tech_ignite = nullptr;
 	int science = 0;
+
+	int science_next_turn = 0;
 
 	EntityPtr cities = nullptr;
 
@@ -614,6 +674,8 @@ struct cPlayer : Component
 		cities->add_component<cElement>();
 		entity->add_child(cities);
 	}
+
+	void update() override;
 
 	cBuilding* add_building(cCity* city, BuildingType type, cTile* tile);
 	cUnit* add_unit(const vec2& pos, UnitType type);
@@ -655,19 +717,53 @@ struct cPlayer : Component
 		}
 		return false;
 	}
+
+	void init_tech_tree()
+	{
+		tech_tree = new Technology;
+		tech_tree->completed = true;
+
+		tech_large_scale_planting = new Technology;
+		tech_large_scale_planting->name = L"Large Scale Planting";
+		tech_large_scale_planting->description = L"Farm +1 Food for every adjacent Farm";
+		tech_large_scale_planting->image = graphics::Image::get(L"assets/tech.png");
+		tech_large_scale_planting->need_value = 12000;
+		tech_large_scale_planting->attach(tech_tree);
+
+		tech_gear_set = new Technology;
+		tech_gear_set->name = L"Gear Set";
+		tech_gear_set->description = L"Steam Machine and Water Wheel +1 Production";
+		tech_gear_set->image = graphics::Image::get(L"assets/tech.png");
+		tech_gear_set->need_value = 12000;
+		tech_gear_set->attach(tech_tree);
+
+		tech_ignite = new Technology;
+		tech_ignite->name = L"Ignite";
+		tech_ignite->description = L"Fire attacks may cause target Ignited";
+		tech_ignite->image = graphics::Image::get(L"assets/tech.png");
+		tech_ignite->need_value = 12000;
+		tech_ignite->attach(tech_tree);
+	}
+
+	Technology* get_researching()
+	{
+		std::deque<Technology*> cands;
+		cands.push_back(tech_tree);
+		while (!cands.empty())
+		{
+			auto t = cands.front();
+			cands.pop_front();
+			if (t->researching)
+				return t;
+			for (auto c : t->children)
+				cands.push_back(c);
+		}
+		return nullptr;
+	}
 };
 
 cPlayer* main_player = nullptr;
 EntityPtr e_players_root = nullptr;
-
-const auto round_time = 30.f;
-float round_timer = round_time;
-bool sig_round = false;
-
-float one_sec_timer = 1.f;
-bool sig_one_sec = false;
-
-bool mass_production = false;
 
 cPlayer* add_player(cTile* tile)
 {
@@ -680,6 +776,7 @@ cPlayer* add_player(cTile* tile)
 	e->add_component_p(p);
 	e_players_root->add_child(e);
 	p->add_building(nullptr, BuildingCity, tile);
+	p->init_tech_tree();
 	return p;
 }
 
@@ -911,9 +1008,9 @@ void cElementCollector::update()
 
 		switch (tile->element_type)
 		{
-		case ElementFire: player->fire_element++; break;
-		case ElementWater: player->water_element++; break;
-		case ElementGrass: player->grass_element++; break;
+		//case ElementFire: player->fire_element++; break;
+		//case ElementWater: player->water_element++; break;
+		//case ElementGrass: player->grass_element++; break;
 		}
 	}
 }
@@ -923,11 +1020,15 @@ void cSteamMachine::update()
 	cBuilding::update();
 
 	working = false;
+	provide_production = 0;
 	if (building_enable)
 	{
 		if (city->apply_population())
 		{
-			city->production_next_turn += 2;
+			provide_production = 2;
+			if (player->tech_gear_set->completed)
+				provide_production += 1;
+			city->production_next_turn += provide_production;
 			working = true;
 		}
 	}
@@ -944,11 +1045,15 @@ void cWaterWheel::update()
 	cBuilding::update();
 
 	working = false;
+	provide_production = 0;
 	if (building_enable)
 	{
 		if (city->apply_population())
 		{
-			city->production_next_turn += 2;
+			provide_production = 2;
+			if (player->tech_gear_set->completed)
+				provide_production += 1;
+			city->production_next_turn += provide_production;
 			working = true;
 		}
 	}
@@ -965,11 +1070,21 @@ void cFarm::update()
 	cBuilding::update();
 
 	working = false;
+	provide_food = 0;
 	if (building_enable)
 	{
 		if (city->apply_population())
 		{
-			city->food_production_next_turn += 2;
+			provide_food = 2;
+			if (player->tech_large_scale_planting->completed)
+			{
+				for (auto aj : tile->get_adjacent())
+				{
+					if (aj->building && aj->building->type == BuildingFarm)
+						provide_food += 1;
+				}
+			}
+			city->food_production_next_turn += provide_food;
 			working = true;
 		}
 	}
@@ -1107,11 +1222,33 @@ void cUnit::update()
 			create_bullet(pos + dir * body2d->radius, dir * 100.f, element_type, player);
 		}
 	}
+
+	for (auto i = 0; i < StatusCount; i++)
+	{
+		auto& s = statuses[i];
+		if (s.duration > 0.f)
+		{
+			switch (i)
+			{
+			case StatusIgnited:
+				if (sig_one_third_sec)
+					take_damage(ElementFire, hp_max / (100 * 3));
+				break;
+			case StatusPoisoned:
+				if (sig_one_third_sec)
+					take_damage(ElementGrass, hp_max / (100 * 5));
+				break;
+			}
+			s.duration -= delta_time;
+			if (s.duration <= 0.f)
+				s.duration = 0.f;
+		}
+	}
 }
 
 void cBullet::update()
 {
-	body2d->set_velocity(vel);
+	body2d->set_velocity(velocity);
 
 	ttl -= delta_time;
 	if (ttl <= 0.f)
@@ -1142,13 +1279,49 @@ cBullet* create_bullet(const vec2& pos, const vec2& velocity, ElementType elemen
 	b->id = bullet_id++;
 	b->color = color;
 	b->element_type = element_type;
-	b->vel = velocity;
+	if (player->tech_ignite->completed)
+		b->status_values[StatusIgnited] = 20.f;
+	b->velocity = velocity;
 	e->add_component_p(b);
 	e_bullets_root->add_child(e);
 
 	sound_shot->play();
 
 	return b;
+}
+
+void cPlayer::update()
+{
+	auto researching = get_researching();
+	while (science > 0 && researching)
+	{
+		researching->value_change = 0;
+
+		if (sig_one_sec)
+		{
+			researching->value_avg = researching->value_one_sec_accumulate;
+			researching->value_one_sec_accumulate = 0;
+		}
+
+		auto s = min(science, researching->need_value - researching->value);
+		researching->value_change = s;
+		researching->value += researching->value_change;
+		researching->value_one_sec_accumulate += s;
+
+		if (researching->value >= researching->need_value)
+		{
+			researching->completed = true;
+			researching->researching = false;
+		}
+
+		science -= s;
+		researching = get_researching();
+	}
+
+	science = science_next_turn;
+
+	science_next_turn = 0;
+	science_next_turn += 10; // from ??
 }
 
 cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
@@ -1204,12 +1377,8 @@ cBuilding* cPlayer::add_building(cCity* city, BuildingType type, cTile* tile)
 		e->add_component_p(b);
 
 		b->add_territory(tile);
-		b->add_territory(tile->tile_rb);
-		b->add_territory(tile->tile_b);
-		b->add_territory(tile->tile_lb);
-		b->add_territory(tile->tile_lt);
-		b->add_territory(tile->tile_t);
-		b->add_territory(tile->tile_rt);
+		for (auto aj : tile->get_adjacent())
+			b->add_territory(aj);
 		cities->add_child(e);
 		update_border_lines();
 
@@ -1349,9 +1518,12 @@ void on_contact(EntityPtr a, EntityPtr b)
 		if (character->player->id != bullet->player_id)
 		{
 			bullet->dead = true;
-			character->hp -= 10 * element_effectiveness[bullet->element_type][character->element_type];
-			if (character->hp <= 0)
-				character->dead = true;
+			character->take_damage(bullet->element_type, 10);
+			for (auto i = 0; i < StatusCount; i++)
+			{
+				if (auto v = bullet->status_values[i]; v > 0.f)
+					character->take_status_value((StatusType)i, v);
+			}
 
 			hit = true;
 		}
@@ -1429,6 +1601,7 @@ void Game::init()
 	img_food = graphics::Image::get(L"assets/food.png");
 	img_population = graphics::Image::get(L"assets/population.png");
 	img_production = graphics::Image::get(L"assets/production.png");
+	img_science = graphics::Image::get(L"assets/science.png");
 	img_frame = graphics::Image::get(L"assets/frame.png");
 	img_frame_desc = img_frame->desc_with_config();
 	img_frame2 = graphics::Image::get(L"assets/frame2.png");
@@ -1451,6 +1624,7 @@ void Game::init()
 	ui_canvas->register_ch_icon(ch_icon_food, img_food->desc());
 	ui_canvas->register_ch_icon(ch_icon_population, img_population->desc());
 	ui_canvas->register_ch_icon(ch_icon_production, img_production->desc());
+	ui_canvas->register_ch_icon(ch_icon_science, img_science->desc());
 
 	hud->push_style_var(HudStyleVarWindowFrame, vec4(1.f, 0.f, 0.f, 0.f));
 	hud->push_style_sound(HudStyleSoundButtonHover, sound_hover);
@@ -1470,8 +1644,8 @@ void Game::init()
 	sound_clicked = load_sound_effect(L"assets/clicked.wav", 0.35f);
 	sound_construction_begin = load_sound_effect(L"assets/construction_begin.wav", 0.35f);
 	sound_construction_end = load_sound_effect(L"assets/construction_end.wav", 0.35f);
-	sound_shot = load_sound_effect(L"assets/shot.wav", 0.25f);
-	sound_hit = load_sound_effect(L"assets/hit.wav", 0.3f);
+	sound_shot = load_sound_effect(L"assets/shot.wav", 0.15f);
+	sound_hit = load_sound_effect(L"assets/hit.wav", 0.2f);
 
 	{
 		auto effectiveness = element_effectiveness[ElementFire];
@@ -1564,8 +1738,6 @@ void Game::init()
 		.element_type = ElementGrass,
 		.image = graphics::Image::get(L"assets/grass_elemental.png")
 	};
-
-	init_tech_tree();
 
 	auto root = world->root.get();
 
@@ -1823,6 +1995,14 @@ bool Game::on_update()
 		one_sec_timer = 1.f;
 	}
 
+	one_third_sec_timer -= delta_time;
+	sig_one_third_sec = false;
+	if (one_third_sec_timer <= 0.f)
+	{
+		sig_one_third_sec = true;
+		one_third_sec_timer = 0.33f;
+	}
+
 	{
 		auto n = e_units_root->children.size();
 		for (auto i = 0; i < n; i++)
@@ -1918,6 +2098,13 @@ bool Game::on_update()
 	return true;
 }
 
+std::wstring format_time(int sec)
+{
+	if (sec <= 0)
+		return L"--:--";
+	return std::format(L"{:02d}:{:02d}", sec / 60, sec % 60);
+}
+
 void Game::on_hud()
 {
 	auto screen_size = ui_canvas->size;
@@ -1930,7 +2117,7 @@ void Game::on_hud()
 	//hud->text(std::format(L"{}", main_player->water_element));
 	//hud->rect(vec2(16.f), cvec4(127, 255, 127, 255));
 	//hud->text(std::format(L"{}", main_player->grass_element));
-	hud->text(std::format(L"Science: {}", main_player->science));
+	hud->text(std::format(L"{}{}", ch_icon_science, main_player->science));
 	hud->end_layout();
 	hud->end();
 
@@ -1960,12 +2147,12 @@ void Game::on_hud()
 		if (city->no_production)
 		{
 			if (hud->button(L"No Production"))
-				;
+				selecting_tile = city->tile;
 		}
 		if (city->unapplied_population)
 		{
 			if (hud->button(L"Unapplied Population"))
-				;
+				selecting_tile = city->tile;
 		}
 	}
 	hud->end();
@@ -2034,13 +2221,12 @@ void Game::on_hud()
 				hud->text(std::format(L"{}{}{}", ch_color_white, ch_icon_population, ch_color_end));
 				if (hud->item_hovered())
 					popup_str = std::format(L"Population Growth\nNeeded Surplus Food: {}\nStored Surplus Food: {:.1f}", owner_city->food_to_produce_population / 100, owner_city->surplus_food / 100.f);
-				auto sec = (owner_city->food_to_produce_population - owner_city->surplus_food) / (owner_city->food_production * 60);
 				hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 				hud->progress_bar(vec2(178.f, 24.f), (float)owner_city->surplus_food / (float)owner_city->food_to_produce_population,
-					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}{}{}{}    {:02d}:{:02d}", 
+					cvec4(255, 200, 127, 255), cvec4(127, 127, 127, 255), std::format(L"{:.1f}/{}{}{}{}    {}", 
 						owner_city->surplus_food / 100.f, owner_city->food_to_produce_population / 100,
 						ch_color_white, ch_icon_food, ch_color_end,
-						sec / 60, sec % 60));
+						format_time((owner_city->food_to_produce_population - owner_city->surplus_food) / (owner_city->food_production * 60))));
 				hud->pop_style_color(HudStyleColorText);
 				hud->end_layout();
 
@@ -2151,13 +2337,12 @@ void Game::on_hud()
 								break;
 							}
 						}
-						auto sec = p.value_avg > 0 ? (p.need_value - p.value) / p.value_avg : 0;
 						hud->push_style_color(HudStyleColorText, cvec4(0, 0, 0, 255));
 						hud->progress_bar(vec2(200.f, 24.f), (float)p.value / (float)p.need_value,
 							owner_city->player->color, cvec4(127, 127, 127, 255), std::format(
-								L"{:.1f}/{}{}{}{}    {:02d}:{:02d}",
+								L"{:.1f}/{}{}{}{}    {}",
 								p.value / 100.f, p.need_value / 100, ch_color_white, ch_icon_production, ch_color_end,
-								sec / 60, sec % 60));
+								format_time(p.value_avg > 0 ? (p.need_value - p.value) / p.value_avg : 0)));
 						hud->pop_style_color(HudStyleColorText);
 						hud->end_layout();
 					}
@@ -2213,13 +2398,12 @@ void Game::on_hud()
 					if (hud->item_hovered())
 					{
 						popup_img = info.image;
-						auto sec = info.need_production / (owner_city->production * 60);
 						popup_str = std::format(
 							L"{}{}{}\n"
-							L"Need: {}{}{}{}    {:02d}:{:02d}\n"
+							L"Need: {}{}{}{}    {}\n"
 							L"{}{}{}",
 							ch_size_big, info.name, ch_size_end,
-							info.need_production / 100, ch_color_white, ch_icon_production, ch_color_end, sec / 60, sec % 60,
+							info.need_production / 100, ch_color_white, ch_icon_production, ch_color_end, format_time(info.need_production / (owner_city->production * 60)),
 							ch_size_medium, info.description, ch_size_end);
 						if (!ok)
 							popup_str += std::format(L"\n{}Can Only Build On {} Tile{}", ch_color_no, get_element_name(info.require_tile_type), ch_color_end);
@@ -2248,13 +2432,56 @@ void Game::on_hud()
 	{
 		hud->begin("tech_tree"_h, vec2(20.f, 75.f), vec2(1240.f, 600.f));
 		hud->begin_layout(HudVertical, vec2(1236.f, 560.f));
-		show_tech_ui(hud, tech_tree);
+		std::function<void(Technology*)> show_tech_ui;
+		show_tech_ui = [&](Technology* tech) {
+			hud->begin_layout(HudHorizontal);
+			for (auto t : tech->children)
+			{
+				hud->begin_layout(HudVertical);
+				hud->push_style_var(HudStyleVarFrame, vec4(1.f));
+				hud->push_style_color(HudStyleColorFrame, t->completed ? cvec4(255) : (t->researching ? cvec4(127, 127, 255, 255) : cvec4(127, 127, 127, 255)));
+				hud->push_style_color(HudStyleColorImage, t->completed ? cvec4(255) : cvec4(127, 127, 127, 255));
+				hud->image(vec2(32.f), t->image->desc());
+				hud->pop_style_var(HudStyleVarFrame);
+				hud->pop_style_color(HudStyleColorFrame);
+				hud->pop_style_color(HudStyleColorImage);
+				if (hud->item_hovered())
+				{
+					popup_str = std::format(
+						L"{}{}{}\n"
+						L"Progress: {:.1f}/{}{}{}{}    {}\n"
+						L"{}{}{}",
+						ch_size_big, t->name, ch_size_end,
+						t->value / 100.f, t->need_value / 100, ch_color_white, ch_icon_science, ch_color_end,
+						format_time(t->researching && t->value_avg > 0 ? (t->need_value - t->value) / t->value_avg : 0),
+						ch_size_medium, t->description, ch_size_end);
+				}
+				if (hud->item_clicked())
+				{
+					main_player->tech_tree->stop_researching();
+					t->start_researching();
+				}
+				if (!t->completed)
+				{
+					hud->progress_bar(vec2(32.f, 4.f), (float)t->value / (float)t->need_value,
+						cvec4(127, 127, 255, 255), cvec4(127, 127, 127, 255), L"");
+				}
+				hud->end_layout();
+			}
+			hud->end_layout();
+
+			for (auto t : tech->children)
+				show_tech_ui(t);
+		};
+		show_tech_ui(main_player->tech_tree);
 		hud->end_layout();
+
 		hud->begin_layout(HudHorizontal);
 		hud->rect(vec2(1160.f, 8.f), cvec4(0));
 		if (hud->button(L"Close"))
 			show_tech_tree = false;
 		hud->end();
+
 		hud->end();
 	}
 
